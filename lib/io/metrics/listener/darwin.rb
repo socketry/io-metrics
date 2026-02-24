@@ -9,7 +9,7 @@ class IO
 		class Listener::Darwin
 			NETSTAT = "/usr/sbin/netstat"
 			
-			# Whether listener stats can be captured on this system.
+			# Whether listener listeners can be captured on this system.
 			def self.supported?
 				File.executable?(NETSTAT)
 			end
@@ -37,10 +37,10 @@ class IO
 			end
 			
 			# Parse netstat -L output and extract listener statistics.
-			# @parameter addresses [Array<String> | Nil] Optional filter for specific addresses.
-			# @returns [Hash<String, Listener>] Hash mapping "ip:port" to Listener.
+			# @parameter addresses [Array(String) | Nil] Optional filter for specific addresses.
+			# @returns [Hash(String, Listener)] Hash mapping "ip:port" to Listener.
 			def self.capture_tcp(addresses = nil)
-				stats = {}
+				listeners = {}
 				address_filter = addresses ? addresses.map{|address| address.downcase}.to_set : nil
 				
 				IO.popen([NETSTAT, "-L", "-an", "-p", "tcp"], "r") do |io|
@@ -49,49 +49,49 @@ class IO
 						# Skip header and empty lines
 						next if line.start_with?("Current") || line.start_with?("Listen") || line.strip.empty?
 						
-						# Format: "qlen/incqlen/maxqlen    Local Address"
+						# Format: "queue_length/incomplete_queue_length/maximum_queue_length    Local Address"
 						fields = line.split(/\s+/)
 						next if fields.size < 2
 						
-						queue_info = fields[0]
-						local_addr_raw = fields[1]
+						queue_statistics = fields[0]
+						local_address_raw = fields[1]
 						
-						# Parse queue info: "qlen/incqlen/maxqlen"
-						if queue_info =~ /^(\d+)\/(\d+)\/(\d+)$/
-							qlen = $1.to_i
-							# incqlen = $2.to_i  # incomplete connections (SYN_RECV)
-							# maxqlen = $3.to_i  # max queue size
+						# Parse queue statistics: "queue_length/incomplete_queue_length/maximum_queue_length"
+						if queue_statistics =~ /^(\d+)\/(\d+)\/(\d+)$/
+							queue_length = $1.to_i
+							# incomplete_queue_length = $2.to_i  # incomplete connections (SYN_RECV)
+							# maximum_queue_length = $3.to_i  # maximum queue size
 							
 							# Parse address
-							address = parse_address(local_addr_raw)
+							address = parse_address(local_address_raw)
 							
 							# Apply filter if specified
 							next if address_filter && !address_filter.include?(address)
 							
-							stats[address] ||= Listener.zero
-							stats[address].queue_size = qlen
+							listeners[address] ||= Listener.zero
+							listeners[address].queue_size = queue_length
 							# active_connections set to 0 (can't reliably count per listener)
-							stats[address].active_connections = 0
+							listeners[address].active_connections = 0
 						end
 					end
 				end
 				
-				return stats
+				return listeners
 			rescue Errno::ENOENT, Errno::EACCES
 				return {}
 			end
 			
-			# Capture listener stats for TCP sockets.
-			# @parameter addresses [String | Array<String> | Nil] TCP address(es) to capture, e.g. "0.0.0.0:80" or ["127.0.0.1:8080"]. If nil, captures all.
-			# @parameter paths [String | Array<String> | Nil] Unix socket path(s) to capture (not supported on Darwin).
+			# Capture listener listeners for TCP sockets.
+			# @parameter addresses [Array(String) | Nil] TCP address(es) to capture, e.g. ["0.0.0.0:80"]. If nil, captures all.
+			# @parameter paths [Array(String) | Nil] Unix socket path(s) to capture (not supported on Darwin).
 			# @returns [Hash(String, Listener)] Hash mapping addresses to Listener.
 			def self.capture(addresses: nil, paths: nil)
-				stats = {}
+				listeners = {}
 				
-				# Capture TCP stats (Unix sockets not supported on Darwin via netstat)
-				stats.merge!(capture_tcp(addresses))
+				# Capture TCP listeners (Unix sockets not supported on Darwin via netstat)
+				listeners.merge!(capture_tcp(addresses))
 				
-				return stats
+				return listeners
 			end
 		end
 	end
@@ -106,9 +106,9 @@ if IO::Metrics::Listener::Darwin.supported?
 			true
 		end
 		
-		# Capture listener stats for the given address(es).
-		# @parameter addresses [Array<String> | Nil] TCP address(es) to capture, e.g. ["0.0.0.0:80"]. If nil, captures all listening TCP sockets.
-		# @parameter paths [Array<String> | Nil] Unix socket path(s) to capture (not supported on Darwin).
+		# Capture listener listeners for the given address(es).
+		# @parameter addresses [Array(String) | Nil] TCP address(es) to capture, e.g. ["0.0.0.0:80"]. If nil, captures all listening TCP sockets.
+		# @parameter paths [Array(String) | Nil] Unix socket path(s) to capture (not supported on Darwin).
 		# @returns [Hash(String, Listener) | Nil] A hash mapping addresses to Listener, or nil if not supported.
 		def capture(**options)
 			IO::Metrics::Listener::Darwin.capture(**options)
