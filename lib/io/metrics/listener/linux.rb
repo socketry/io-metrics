@@ -228,18 +228,17 @@ class IO
 					next if line.start_with?("Num")
 					
 					# Format: Num RefCount Protocol Flags Type St Inode Path
-					# Example (stripped): "2: 00000001 00000000 00000000 00000000 00000001 00000002 00000000 00000000 /run/user/1000/wayland-0"
+					# Example (stripped): "00000000cf265b54: 00000003 00000000 00000000 0001 03 18324 /run/user/1000/wayland-0"
 					# After splitting by whitespace:
-					# [0] = "2:", [1] = RefCount, [2] = Protocol, [3] = Flags, [4] = Type, [5] = St, [6-8] = Inode (3 parts), [9+] = Path
-					# Note: In the test fixture, the state value appears in field[6] (first Inode field)
+					# [0] = "00000000cf265b54:", [1] = RefCount, [2] = Protocol, [3] = Flags, [4] = Type, [5] = St, [6] = Inode, [7+] = Path
 					fields = line.split(/\s+/)
-					next if fields.size < 10
+					next if fields.size < 7
 					
-					# State field is at index 6 (first Inode field which contains the actual state value in fixture format)
+					# State field is at index 5 (St)
 					# 01 = SS_UNCONNECTED (listening), 02 = SS_CONNECTING (queued), 03 = SS_CONNECTED (active)
-					state_hex = fields[6]
-					# Path starts at index 9 (after Num, RefCount, Protocol, Flags, Type, St, and 3 Inode fields)
-					path = fields[9..-1].join(" ")
+					state_hex = fields[5]
+					# Path starts at index 7
+					path = fields[7..-1]&.join(" ") || ""
 					
 					# Apply filter if specified
 					next if path_filter && !path_filter.include?(path)
