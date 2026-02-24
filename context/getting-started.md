@@ -34,7 +34,7 @@ You can limit captures to specific TCP addresses:
 ~~~ ruby
 require "io/metrics"
 
-listeners = IO::Metrics::Listener.capture(["0.0.0.0:80", "127.0.0.1:8080"])
+listeners = IO::Metrics::Listener.capture(addresses: ["0.0.0.0:80", "127.0.0.1:8080"])
 ~~~
 
 ## Capturing Unix Domain Sockets
@@ -48,7 +48,7 @@ require "io/metrics"
 listeners = IO::Metrics::Listener.capture(paths: ["/tmp/socket.sock"])
 
 # Both TCP and Unix sockets together
-listeners = IO::Metrics::Listener.capture(["0.0.0.0:80"], paths: ["/tmp/socket.sock"])
+listeners = IO::Metrics::Listener.capture(addresses: ["0.0.0.0:80"], paths: ["/tmp/socket.sock"])
 ~~~
 
 ## Metrics
