@@ -6,47 +6,9 @@ Extract I/O metrics from the host system, specifically listen queue statistics.
 
 ## Usage
 
-``` ruby
-require "io/metrics"
+Please see the [project documentation](https://socketry.github.io/io-metrics/) for more details.
 
-# Check if supported on this platform
-if IO::Metrics::Listener.supported?
-	# Capture stats for all listening sockets
-	listeners = IO::Metrics::Listener.capture
-	
-	listeners.each do |address, listener|
-		puts "#{address}: queue_size=#{listener.queue_size}, active=#{listener.active_connections}"
-	end
-	
-	# Capture stats for specific addresses
-	listeners = IO::Metrics::Listener.capture(["0.0.0.0:80", "127.0.0.1:8080"])
-	
-	# Capture Unix domain socket stats
-	listeners = IO::Metrics::Listener.capture(paths: ["/tmp/socket.sock"])
-end
-```
-
-## Platform Support
-
-  - **Linux**: Full support via `/proc/net/tcp`, `/proc/net/tcp6` (IPv4 and IPv6), and `/proc/net/unix`
-  - **macOS**: TCP listener support via `netstat -L` (Unix sockets not supported)
-
-## Metrics
-
-### Listener
-
-  - `queue_size`: Number of connections waiting to be accepted (queued)
-  - `active_connections`: Number of active connections (computed by matching ESTABLISHED connections to listeners by address and port)
-
-## Design
-
-This gem is designed to replace raindrops with a simpler interface. It focuses on extracting queue size metrics from the OS, which is the primary use case for monitoring server load.
-
-Unlike raindrops which uses netlink/inet\_diag for efficient TCP statistics, this implementation reads from `/proc/net/tcp` for simplicity. This means:
-
-  - Queue size is accurately reported for listening sockets
-  - Active connection counts are not available without netlink (set to 0)
-  - Queue latency is not available from `/proc` (would require additional instrumentation)
+  - [Getting Started](https://socketry.github.io/io-metrics/guides/getting-started/index) - This guide explains how to use `io-metrics` to capture listener queue statistics from the host operating system.
 
 ## Contributing
 

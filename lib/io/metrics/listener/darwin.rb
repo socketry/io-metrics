@@ -88,23 +88,14 @@ class IO
 			def self.capture(addresses: nil, paths: nil)
 				stats = {}
 				
-				# Normalize addresses to array
-				tcp_addresses = case addresses
-				when String then [addresses]
-				when Array then addresses
-				else nil
-				end
-				
 				# Capture TCP stats (Unix sockets not supported on Darwin via netstat)
-				stats.merge!(capture_tcp(tcp_addresses))
+				stats.merge!(capture_tcp(addresses))
 				
 				return stats
 			end
 		end
 	end
 end
-
-require "set"
 
 # Wire Listener.capture and Listener.supported? to this implementation on Darwin.
 if IO::Metrics::Listener::Darwin.supported?
@@ -116,20 +107,11 @@ if IO::Metrics::Listener::Darwin.supported?
 		end
 		
 		# Capture listener stats for the given address(es).
-		# @parameter addresses [String | Array<String> | Nil] TCP address(es) to capture, e.g. "0.0.0.0:80". If nil, captures all listening sockets.
-		# @parameter paths [String | Array<String> | Nil] Unix socket path(s) to capture (not supported on Darwin).
+		# @parameter addresses [Array<String> | Nil] TCP address(es) to capture, e.g. ["0.0.0.0:80"]. If nil, captures all listening TCP sockets.
+		# @parameter paths [Array<String> | Nil] Unix socket path(s) to capture (not supported on Darwin).
 		# @returns [Hash(String, Listener) | Nil] A hash mapping addresses to Listener, or nil if not supported.
-		def capture(addresses = nil, paths: nil, **options)
-			# Handle legacy single-parameter API for backward compatibility
-			if addresses.is_a?(Hash)
-				IO::Metrics::Listener::Darwin.capture(**addresses)
-			elsif addresses.nil? && options.empty? && paths.nil?
-				# No arguments - capture everything
-				IO::Metrics::Listener::Darwin.capture(addresses: nil, paths: nil)
-			else
-				# Normal keyword arguments
-				IO::Metrics::Listener::Darwin.capture(addresses: addresses, paths: paths, **options)
-			end
+		def capture(**options)
+			IO::Metrics::Listener::Darwin.capture(**options)
 		end
 	end
 end

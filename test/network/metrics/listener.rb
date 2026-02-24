@@ -34,7 +34,7 @@ describe IO::Metrics::Listener do
 			end
 			
 			# Try to capture stats for common ports
-			stats = IO::Metrics::Listener.capture(["0.0.0.0:22", "127.0.0.1:8080"])
+			stats = IO::Metrics::Listener.capture(addresses: ["0.0.0.0:22", "127.0.0.1:8080"])
 			
 			expect(stats).to be_a(Hash)
 			stats.each_value do |listener|

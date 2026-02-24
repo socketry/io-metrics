@@ -281,30 +281,17 @@ class IO
 			end
 			
 			# Capture listener stats for TCP and/or Unix domain sockets.
-			# @parameter addresses [String | Array<String> | Nil] TCP address(es) to capture, e.g. "0.0.0.0:80" or ["127.0.0.1:8080"]. If nil and paths is nil, captures all. If nil but paths specified, captures none.
-			# @parameter paths [String | Array<String> | Nil] Unix socket path(s) to capture. If nil and addresses is nil, captures all. If nil but addresses specified, captures none.
+			# @parameter addresses [Array<String> | Nil] TCP address(es) to capture, e.g. ["0.0.0.0:80"]. If nil and paths is nil, captures all. If nil but paths specified, captures none.
+			# @parameter paths [Array<String> | Nil] Unix socket path(s) to capture. If nil and addresses is nil, captures all. If nil but addresses specified, captures none.
 			# @parameter unix_file [String] Optional path to Unix socket file (defaults to "/proc/net/unix").
 			# @returns [Hash(String, Listener)] Hash mapping addresses/paths to Listener.
 			def self.capture(addresses: nil, paths: nil, unix_file: "/proc/net/unix")
 				stats = {}
 				
-				# Normalize addresses to array
-				tcp_addresses = case addresses
-				when String then [addresses]
-				when Array then addresses
-				when nil then paths.nil? ? nil : :skip
-				else nil
-				end
-				
-				# Normalize paths to array
 				# If addresses are specified but paths is nil, don't capture Unix sockets
 				# Only capture Unix sockets if paths is explicitly provided or addresses is nil
-				unix_paths = case paths
-				when String then [paths]
-				when Array then paths
-				when nil then addresses.nil? ? nil : :skip
-				else nil
-				end
+				tcp_addresses = addresses.nil? && !paths.nil? ? :skip : addresses
+				unix_paths = paths.nil? && !addresses.nil? ? :skip : paths
 				
 				# Capture TCP stats (only if not skipped)
 				stats.merge!(capture_tcp(tcp_addresses)) unless tcp_addresses == :skip
@@ -328,20 +315,11 @@ if IO::Metrics::Listener::Linux.supported?
 		end
 		
 		# Capture listener stats for the given address(es).
-		# @parameter addresses [String | Array<String> | Nil] TCP address(es) to capture, e.g. "0.0.0.0:80". If nil, captures all listening sockets.
-		# @parameter paths [String | Array<String> | Nil] Unix socket path(s) to capture. If nil and addresses is nil, captures all. If nil but addresses specified, captures none.
+		# @parameter addresses [Array<String> | Nil] TCP address(es) to capture, e.g. ["0.0.0.0:80"]. If nil, captures all listening TCP sockets.
+		# @parameter paths [Array<String> | Nil] Unix socket path(s) to capture. If nil and addresses is nil, captures all. If nil but addresses specified, captures none.
 		# @returns [Hash(String, Listener) | Nil] A hash mapping addresses/paths to Listener, or nil if not supported.
-		def capture(addresses = nil, paths: nil, **options)
-			# Handle legacy single-parameter API for backward compatibility
-			if addresses.is_a?(Hash)
-				IO::Metrics::Listener::Linux.capture(**addresses)
-			elsif addresses.nil? && options.empty? && paths.nil?
-				# No arguments - capture everything
-				IO::Metrics::Listener::Linux.capture(addresses: nil, paths: nil)
-			else
-				# Normal keyword arguments
-				IO::Metrics::Listener::Linux.capture(addresses: addresses, paths: paths, **options)
-			end
+		def capture(**options)
+			IO::Metrics::Listener::Linux.capture(**options)
 		end
 	end
 end

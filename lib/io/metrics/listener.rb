@@ -30,9 +30,10 @@ class IO
 			end
 			
 			# Capture listener stats for the given address(es).
-			# @parameter addresses [String | Array<String> | Nil] Address(es) to capture stats for, e.g. "0.0.0.0:80" or ["127.0.0.1:8080"]. If nil, captures all listening sockets.
-			# @returns [Hash(String, Listener) | Nil] A hash mapping addresses to Listener, or nil if not supported.
-			def self.capture(addresses = nil)
+			# @parameter addresses [Array<String> | Nil] TCP address(es) to capture, e.g. ["0.0.0.0:80"]. If nil, captures all listening TCP sockets.
+			# @parameter paths [Array<String> | Nil] Unix socket path(s) to capture. If nil and addresses is nil, captures all. If nil but addresses specified, captures none.
+			# @returns [Hash(String, Listener) | Nil] A hash mapping addresses/paths to Listener, or nil if not supported.
+			def self.capture(**options)
 				return nil
 			end
 		end
