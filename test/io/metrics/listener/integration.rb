@@ -10,6 +10,23 @@ require "tempfile"
 return unless RUBY_PLATFORM.include?("linux")
 
 describe IO::Metrics::Listener::Linux do
+	require "socket"
+	
+	def listener_display_key(listener)
+		a = listener.address
+		if a.afamily == Socket::AF_UNIX
+			a.unix_path
+		elsif a.ipv6?
+			"[#{a.ip_address}]:#{a.ip_port}"
+		else
+			"#{a.ip_address}:#{a.ip_port}"
+		end
+	end
+	
+	def find_listener(stats, key)
+		stats.find { |l| listener_display_key(l) == key }
+	end
+	
 	with "real TCP sockets" do
 		it "can capture TCP listener statistics" do
 			# Bind a TCP server socket
@@ -22,10 +39,10 @@ describe IO::Metrics::Listener::Linux do
 				stats = IO::Metrics::Listener::Linux.capture_tcp([address])
 				
 				# Should find the listener
-				expect(stats).to have_keys(address)
-				expect(stats[address]).to be_a(IO::Metrics::Listener)
-				expect(stats[address].queue_size).to be >= 0
-				expect(stats[address].active_connections).to be == 0
+				row = find_listener(stats, address)
+				expect(row).to be_a(IO::Metrics::Listener)
+				expect(row.queue_size).to be >= 0
+				expect(row.active_connections).to be == 0
 			ensure
 				server.close
 			end
@@ -53,8 +70,9 @@ describe IO::Metrics::Listener::Linux do
 				stats = IO::Metrics::Listener::Linux.capture_tcp([address])
 				
 				# Should count established connections
-				expect(stats).to have_keys(address)
-				expect(stats[address].active_connections).to be >= 2
+				row = find_listener(stats, address)
+				expect(row).not_to be_nil
+				expect(row.active_connections).to be >= 2
 			ensure
 				[client1, client2, accepted1, accepted2].compact.each(&:close) rescue nil
 				server.close
@@ -72,8 +90,7 @@ describe IO::Metrics::Listener::Linux do
 				stats = IO::Metrics::Listener::Linux.capture_tcp([address])
 				
 				# Should find the listener
-				expect(stats).to have_keys(address)
-				expect(stats[address]).to be_a(IO::Metrics::Listener)
+				expect(find_listener(stats, address)).to be_a(IO::Metrics::Listener)
 			ensure
 				server.close if server
 			end
@@ -92,8 +109,7 @@ describe IO::Metrics::Listener::Linux do
 				stats = IO::Metrics::Listener::Linux.capture_tcp([address])
 				
 				# Should find the wildcard listener
-				expect(stats).to have_keys(address)
-				expect(stats[address]).to be_a(IO::Metrics::Listener)
+				expect(find_listener(stats, address)).to be_a(IO::Metrics::Listener)
 			ensure
 				server.close
 			end
@@ -119,8 +135,8 @@ describe IO::Metrics::Listener::Linux do
 				stats = IO::Metrics::Listener::Linux.capture_unix([socket_path])
 				
 				# Should find the listener
-				expect(stats).to have_keys(socket_path)
-				expect(stats[socket_path]).to be_a(IO::Metrics::Listener)
+				row = find_listener(stats, socket_path)
+				expect(row).to be_a(IO::Metrics::Listener)
 			ensure
 				server.close
 				File.unlink(socket_path) rescue nil
@@ -152,9 +168,10 @@ describe IO::Metrics::Listener::Linux do
 				stats = IO::Metrics::Listener::Linux.capture_unix([socket_path])
 				
 				# Should count connections
-				expect(stats).to have_keys(socket_path)
+				row = find_listener(stats, socket_path)
+				expect(row).not_to be_nil
 				# Note: Exact counts may vary by system/timing
-				total_connections = stats[socket_path].queue_size + stats[socket_path].active_connections
+				total_connections = row.queue_size + row.active_connections
 				expect(total_connections).to be >= 1
 			ensure
 				[client1, client2, accepted1].compact.each(&:close) rescue nil
@@ -189,9 +206,8 @@ describe IO::Metrics::Listener::Linux do
 				)
 				
 				# Should find both
-				expect(stats).to have_keys(tcp_address, socket_path)
-				expect(stats[tcp_address]).to be_a(IO::Metrics::Listener)
-				expect(stats[socket_path]).to be_a(IO::Metrics::Listener)
+				expect(find_listener(stats, tcp_address)).to be_a(IO::Metrics::Listener)
+				expect(find_listener(stats, socket_path)).to be_a(IO::Metrics::Listener)
 			ensure
 				tcp_server.close
 				unix_server.close
@@ -213,8 +229,9 @@ describe IO::Metrics::Listener::Linux do
 				stats = IO::Metrics::Listener::Linux.capture
 				
 				# Should include our server (and possibly others)
-				expect(stats).to be_a(Hash)
+				expect(stats).to be_a(Array)
 				expect(stats.size).to be > 0
+				expect(find_listener(stats, address)).not_to be_nil
 			ensure
 				server.close
 			end

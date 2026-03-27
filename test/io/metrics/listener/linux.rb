@@ -8,6 +8,22 @@ require "io/metrics"
 return unless RUBY_PLATFORM.include?("linux")
 
 describe IO::Metrics::Listener::Linux do
+	require "socket"
+	
+	def listener_display_key(listener)
+		a = listener.address
+		if a.afamily == Socket::AF_UNIX
+			a.unix_path
+		elsif a.ipv6?
+			"[#{a.ip_address}]:#{a.ip_port}"
+		else
+			"#{a.ip_address}:#{a.ip_port}"
+		end
+	end
+	
+	def find_listener(stats, key)
+		stats.find { |l| listener_display_key(l) == key }
+	end
 	with ".parse_ipv4" do
 		it "can parse IPv4 addresses from hex format" do
 			# 0100007F = 127.0.0.1 (little-endian)
@@ -62,7 +78,7 @@ describe IO::Metrics::Listener::Linux do
 			
 			stats = IO::Metrics::Listener::Linux.capture_tcp_file(fixture_path, nil, ipv6: false)
 			
-			expect(stats).to be_a(Hash)
+			expect(stats).to be_a(Array)
 			expect(stats.size).to be > 0
 			
 			# Check specific listeners from fixture
@@ -70,11 +86,13 @@ describe IO::Metrics::Listener::Linux do
 			# Line 1: 00000000:0016 = 0.0.0.0:22 (LISTEN)
 			# Line 2: 00000000:0CEA = 0.0.0.0:3306 (LISTEN)
 			# Line 3: 0100007F:1389 = 127.0.0.1:5001 (LISTEN)
-			expect(stats).to have_keys("127.0.0.54:53", "0.0.0.0:22", "0.0.0.0:3306", "127.0.0.1:5001")
+			keys = stats.map { |l| listener_display_key(l) }
+			expect(keys).to include("127.0.0.54:53", "0.0.0.0:22", "0.0.0.0:3306", "127.0.0.1:5001")
 			
 			# Check queue sizes (all should be 0 in fixture)
-			stats.each_value do |listener|
+			stats.each do |listener|
 				expect(listener).to be_a(IO::Metrics::Listener)
+				expect(listener.address).to be_a(Addrinfo)
 				expect(listener.queue_size).to be >= 0
 				expect(listener.active_connections).to be >= 0
 			end
@@ -91,8 +109,8 @@ describe IO::Metrics::Listener::Linux do
 			# Line 3: 0100007F:1389 = 127.0.0.1:5001 (LISTEN)
 			# Lines 18-19: ESTABLISHED connections to 127.0.0.1:1389 (5001)
 			# These should match to the listener
-			if stats["127.0.0.1:5001"]
-				expect(stats["127.0.0.1:5001"].active_connections).to be == 2
+			if row = find_listener(stats, "127.0.0.1:5001")
+				expect(row.active_connections).to be == 2
 			end
 		end
 	end
@@ -107,17 +125,18 @@ describe IO::Metrics::Listener::Linux do
 			
 			stats = IO::Metrics::Listener::Linux.capture_unix(nil, file: fixture_path)
 			
-			expect(stats).to be_a(Hash)
+			expect(stats).to be_a(Array)
 			
 			# Check specific Unix sockets from fixture
-			expect(stats).to have_keys("/run/user/1000/wayland-0", "/run/user/1000/bus", "/run/dbus/system_bus_socket")
+			paths = stats.map { |l| l.address.unix_path }
+			expect(paths).to include("/run/user/1000/wayland-0", "/run/user/1000/bus", "/run/dbus/system_bus_socket")
 			
 			# Check that queued and active connections are counted correctly
 			# From fixture: /run/user/1000/bus has 2 SS_CONNECTED (0x03) entries (lines 4-5)
-			expect(stats["/run/user/1000/bus"].active_connections).to be == 2
+			expect(find_listener(stats, "/run/user/1000/bus").active_connections).to be == 2
 			
 			# From fixture: /run/user/1000/wayland-0 has 1 SS_CONNECTING (0x02) entry (line 3)
-			expect(stats["/run/user/1000/wayland-0"].queue_size).to be == 1
+			expect(find_listener(stats, "/run/user/1000/wayland-0").queue_size).to be == 1
 		end
 		
 		it "can filter by specific paths" do
@@ -127,8 +146,9 @@ describe IO::Metrics::Listener::Linux do
 			
 			stats = IO::Metrics::Listener::Linux.capture_unix(["/run/user/1000/bus"], file: fixture_path)
 			
-			expect(stats).to have_keys("/run/user/1000/bus")
-			expect(stats).not.to have_keys("/run/user/1000/wayland-0")
+			paths = stats.map { |l| l.address.unix_path }
+			expect(paths).to include("/run/user/1000/bus")
+			expect(paths).not_to include("/run/user/1000/wayland-0")
 		end
 	end
 end

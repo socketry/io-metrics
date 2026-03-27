@@ -4,6 +4,7 @@
 # Copyright, 2026, by Samuel Williams.
 
 require "io/metrics"
+require "json"
 
 describe IO::Metrics::Listener do
 	with ".zero" do
@@ -11,9 +12,18 @@ describe IO::Metrics::Listener do
 			listener = IO::Metrics::Listener.zero
 			
 			expect(listener).to have_attributes(
+				address: be_nil,
 				queue_size: be == 0,
 				active_connections: be == 0
 			)
+		end
+		
+		it "serializes to JSON with null address and integer counters" do
+			json = JSON.parse(IO::Metrics::Listener.zero.to_json)
+			
+			expect(json["address"]).to be_nil
+			expect(json["queue_size"]).to be == 0
+			expect(json["active_connections"]).to be == 0
 		end
 	end
 	
@@ -25,7 +35,7 @@ describe IO::Metrics::Listener do
 			
 			stats = IO::Metrics::Listener.capture
 			
-			expect(stats).to be_a(Hash)
+			expect(stats).to be_a(Array)
 		end
 		
 		it "can capture stats for specific addresses" do
@@ -36,9 +46,10 @@ describe IO::Metrics::Listener do
 			# Try to capture stats for common ports
 			stats = IO::Metrics::Listener.capture(addresses: ["0.0.0.0:22", "127.0.0.1:8080"])
 			
-			expect(stats).to be_a(Hash)
-			stats.each_value do |listener|
+			expect(stats).to be_a(Array)
+			stats.each do |listener|
 				expect(listener).to be_a(IO::Metrics::Listener)
+				expect(listener.address).to be_a(Addrinfo)
 				expect(listener.queue_size).to be >= 0
 				expect(listener.active_connections).to be >= 0
 			end
@@ -52,11 +63,12 @@ describe IO::Metrics::Listener do
 			stats = IO::Metrics::Listener.capture
 			next if stats.empty?
 			
-			listener = stats.values.first
+			listener = stats.first
 			json_string = listener.to_json
 			json = JSON.parse(json_string)
 			
-			expect(json).to have_keys("queue_size", "active_connections")
+			expect(json).to have_keys("address", "queue_size", "active_connections")
+			expect(json["address"]).to be_a(String)
 			expect(json["queue_size"]).to be_a(Integer)
 			expect(json["active_connections"]).to be_a(Integer)
 		end

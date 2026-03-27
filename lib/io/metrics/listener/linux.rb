@@ -103,7 +103,7 @@ class IO
 			
 			# Find the best matching listener for an ESTABLISHED connection.
 			# @parameter local_address [String] Local address in "ip:port" or "[ipv6]:port" format.
-			# @parameter listeners [Hash(String, Listener)] Hash of listener addresses to Listener objects.
+			# @parameter listeners [Hash(String, Listener)] Internal map from display address string to Listener.
 			# @returns [String | Nil] The address of the matching listener, or nil if no match.
 			def self.find_matching_listener(local_address, listeners)
 				# Try exact match first
@@ -149,8 +149,15 @@ class IO
 			# @parameter file [String] Path to /proc/net/tcp or /proc/net/tcp6.
 			# @parameter addresses [Array(String) | Nil] Optional filter for specific addresses.
 			# @parameter ipv6 [Boolean] Whether parsing IPv6 addresses.
-			# @returns [Hash(String, Listener)] Hash mapping "ip:port" or "[ipv6]:port" to Listener.
+			# @returns [Array(Listener)] One entry per listening socket.
 			def self.capture_tcp_file(file, addresses = nil, ipv6: false)
+				gather_tcp_file(file, addresses, ipv6: ipv6).values
+			rescue Errno::ENOENT, Errno::EACCES
+				return []
+			end
+			
+			# Internal: same as capture_tcp_file but returns a Hash keyed by display address for merging and connection matching.
+			def self.gather_tcp_file(file, addresses = nil, ipv6: false)
 				listeners = {}
 				address_filter = addresses ? addresses.map{|address| address.downcase}.to_set : nil
 				connections = []
@@ -174,7 +181,8 @@ class IO
 						if state == :listen
 							if ipv6
 								local_ip = parse_ipv6(local_ip_hex)
-								local_address = "[#{local_ip}]:#{parse_port(local_port_hex)}"
+								local_port = parse_port(local_port_hex)
+								local_address = "[#{local_ip}]:#{local_port}"
 							else
 								local_ip = parse_ipv4(local_ip_hex)
 								local_port = parse_port(local_port_hex)
@@ -182,9 +190,9 @@ class IO
 							end
 							
 							# Apply filter if specified
-							next if address_filter && !address_filter.include?(local_address)
+							next if address_filter && !address_filter.include?(local_address.downcase)
 							
-							listeners[local_address] ||= Listener.zero
+							listeners[local_address] ||= Listener.new(Addrinfo.tcp(local_ip, local_port), 0, 0)
 							# rx_queue shows number of connections waiting to be accepted
 							listeners[local_address].queue_size = rx_queue_hex.to_i(16)
 							listeners[local_address].active_connections = 0
@@ -218,7 +226,7 @@ class IO
 			# Parse /proc/net/unix and extract listener statistics for Unix domain sockets.
 			# @parameter paths [Array(String) | Nil] Optional filter for specific socket paths.
 			# @parameter file [String] Optional path to Unix socket file (defaults to "/proc/net/unix").
-			# @returns [Hash(String, Listener)] Hash mapping socket path to Listener.
+			# @returns [Array(Listener)] One entry per socket path with any matching activity.
 			def self.capture_unix(paths = nil, file: "/proc/net/unix")
 				listeners = {}
 				path_filter = paths ? paths.to_set : nil
@@ -246,7 +254,7 @@ class IO
 					
 					state = state_hex.to_i(16)
 					
-					listeners[path] ||= Listener.zero
+					listeners[path] ||= Listener.new(Addrinfo.unix(path), 0, 0)
 					
 					case state
 					when SS_CONNECTING # Queued connections
@@ -256,37 +264,37 @@ class IO
 					end
 				end
 				
-				return listeners
+				return listeners.values
 			rescue Errno::ENOENT, Errno::EACCES
-				return {}
+				return []
 			end
 			
 			# Parse /proc/net/tcp and /proc/net/tcp6 and extract listener statistics.
 			# @parameter addresses [Array(String) | Nil] Optional filter for specific addresses.
-			# @returns [Hash(String, Listener)] Hash mapping "ip:port" or "[ipv6]:port" to Listener.
+			# @returns [Array(Listener)] TCP listeners from both stacks.
 			def self.capture_tcp(addresses = nil)
 				listeners = {}
 				
 				# Capture IPv4 listeners and connections
 				if File.readable?("/proc/net/tcp")
-					listeners.merge!(capture_tcp_file("/proc/net/tcp", addresses, ipv6: false))
+					listeners.merge!(gather_tcp_file("/proc/net/tcp", addresses, ipv6: false))
 				end
 				
 				# Capture IPv6 listeners and connections
 				if File.readable?("/proc/net/tcp6")
-					listeners.merge!(capture_tcp_file("/proc/net/tcp6", addresses, ipv6: true))
+					listeners.merge!(gather_tcp_file("/proc/net/tcp6", addresses, ipv6: true))
 				end
 				
-				return listeners
+				return listeners.values
 			end
 			
 			# Capture listener listeners for TCP and/or Unix domain sockets.
 			# @parameter addresses [Array(String) | Nil] TCP address(es) to capture, e.g. ["0.0.0.0:80"]. If nil and paths is nil, captures all. If nil but paths specified, captures none.
 			# @parameter paths [Array(String) | Nil] Unix socket path(s) to capture. If nil and addresses is nil, captures all. If nil but addresses specified, captures none.
 			# @parameter unix_file [String] Optional path to Unix socket file (defaults to "/proc/net/unix").
-			# @returns [Hash(String, Listener)] Hash mapping addresses/paths to Listener.
+			# @returns [Array(Listener)] All matching listeners (TCP and/or Unix).
 			def self.capture(addresses: nil, paths: nil, unix_file: "/proc/net/unix")
-				listeners = {}
+				result = []
 				
 				# If addresses are specified but paths is nil, don't capture Unix sockets
 				# Only capture Unix sockets if paths is explicitly provided or addresses is nil
@@ -294,12 +302,12 @@ class IO
 				unix_paths = paths.nil? && !addresses.nil? ? :skip : paths
 				
 				# Capture TCP listeners (only if not skipped)
-				listeners.merge!(capture_tcp(tcp_addresses)) unless tcp_addresses == :skip
+				result.concat(capture_tcp(tcp_addresses)) unless tcp_addresses == :skip
 				
 				# Capture Unix domain socket listeners (only if not skipped)
-				listeners.merge!(capture_unix(unix_paths, file: unix_file)) unless unix_paths == :skip
+				result.concat(capture_unix(unix_paths, file: unix_file)) unless unix_paths == :skip
 				
-				return listeners
+				return result
 			end
 		end
 	end
@@ -317,7 +325,7 @@ if IO::Metrics::Listener::Linux.supported?
 		# Capture listener listeners for the given address(es).
 		# @parameter addresses [Array(String) | Nil] TCP address(es) to capture, e.g. ["0.0.0.0:80"]. If nil, captures all listening TCP sockets.
 		# @parameter paths [Array(String) | Nil] Unix socket path(s) to capture. If nil and addresses is nil, captures all. If nil but addresses specified, captures none.
-		# @returns [Hash(String, Listener) | Nil] A hash mapping addresses/paths to Listener, or nil if not supported.
+		# @returns [Array(Listener) | Nil] Captured listeners, or nil if not supported.
 		def capture(**options)
 			IO::Metrics::Listener::Linux.capture(**options)
 		end

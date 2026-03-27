@@ -8,20 +8,28 @@ require "json"
 class IO
 	module Metrics
 		# Represents a network listener socket with its queue statistics.
+		# @attribute address [Addrinfo | Nil] Listening endpoint from capture; nil only for {Listener.zero} placeholders.
 		# @attribute queue_size [Integer] Number of connections waiting to be accepted (queued).
 		# @attribute active_connections [Integer] Number of active connections (already accepted).
-		class Listener < Struct.new(:queue_size, :active_connections)
-			alias as_json to_h
+		class Listener < Struct.new(:address, :queue_size, :active_connections)
+			# Serialize for JSON; address uses Addrinfo#inspect_sockaddr.
+			def as_json(*)
+				{
+					address: address&.inspect_sockaddr,
+					queue_size: queue_size,
+					active_connections: active_connections,
+				}
+			end
 			
 			# Convert the object to a JSON string.
 			def to_json(*arguments)
 				as_json.to_json(*arguments)
 			end
 			
-			# Create a zero-initialized Listener instance.
-			# @returns [Listener] A new Listener object with all fields set to zero.
+			# Create a zero-initialized Listener instance (no endpoint; for tests or templates).
+			# @returns [Listener] Counters zero; {#address} is nil.
 			def self.zero
-				self.new(0, 0)
+				new(nil, 0, 0)
 			end
 			
 			# Whether listener stats can be captured on this system.
@@ -32,7 +40,7 @@ class IO
 			# Capture listener stats for the given address(es).
 			# @parameter addresses [Array(String) | Nil] TCP address(es) to capture, e.g. ["0.0.0.0:80"]. If nil, captures all listening TCP sockets.
 			# @parameter paths [Array(String) | Nil] Unix socket path(s) to capture. If nil and addresses is nil, captures all. If nil but addresses specified, captures none.
-			# @returns [Hash(String, Listener) | Nil] A hash mapping addresses/paths to Listener, or nil if not supported.
+			# @returns [Array(Listener) | Nil] Captured listeners, or nil if not supported.
 			def self.capture(**options)
 				return nil
 			end
