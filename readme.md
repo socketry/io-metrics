@@ -10,6 +10,10 @@ Please see the [project documentation](https://socketry.github.io/io-metrics/) f
 
   - [Getting Started](https://socketry.github.io/io-metrics/guides/getting-started/index) - This guide explains how to use `io-metrics` to capture listener queue statistics from the host operating system.
 
+## Releases
+
+There are no documented releases.
+
 ## Contributing
 
 We welcome contributions to this project.
@@ -19,6 +23,22 @@ We welcome contributions to this project.
 3.  Commit your changes (`git commit -am 'Add some feature'`).
 4.  Push to the branch (`git push origin my-new-feature`).
 5.  Create new Pull Request.
+
+### Running Tests
+
+To run the test suite:
+
+``` shell
+bundle exec sus
+```
+
+### Making Releases
+
+To make a new release:
+
+``` shell
+bundle exec bake gem:release:patch # or minor or major
+```
 
 ### Developer Certificate of Origin
 
