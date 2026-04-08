@@ -218,6 +218,14 @@ class IO
 					end
 				end
 				
+				# /proc lists every ESTABLISHED child with the listener's local address, including
+				# sockets still in the accept queue. Those are already counted in queue_size on the
+				# LISTEN row (same meaning as Raindrops inet_diag queued vs inode != 0 for active).
+				listeners.each_value do |listener|
+					backlog = listener.queue_size
+					listener.active_connections = [listener.active_connections - backlog, 0].max
+				end
+				
 				return listeners
 			rescue Errno::ENOENT, Errno::EACCES
 				return {}
