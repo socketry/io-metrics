@@ -66,8 +66,8 @@ def sample_by_port(port)
 		port_from_listener_key(listener_key) == port
 	end
 	
-	ipv4_metrics = tcp_on_port.select(&:ipv4?)
-	ipv6_metrics = tcp_on_port.select(&:ipv6?)
+	ipv4_metrics = tcp_on_port.select { |listener| listener.address.ipv4? }
+	ipv6_metrics = tcp_on_port.select { |listener| listener.address.ipv6? }
 	
 	raindrops_ipv4 = raindrops_on_port.reject { |listener_key, _| listener_key.to_s.start_with?("[") }
 	raindrops_ipv6 = raindrops_on_port.select { |listener_key, _| listener_key.to_s.start_with?("[") }
