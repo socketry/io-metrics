@@ -4,6 +4,7 @@
 # Copyright, 2026, by Samuel Williams.
 
 require "io/metrics"
+require "tempfile"
 
 return unless RUBY_PLATFORM.include?("linux")
 
@@ -24,6 +25,105 @@ describe IO::Metrics::Listener::Linux do
 	def find_listener(stats, key)
 		stats.find { |l| listener_display_key(l) == key }
 	end
+	
+	with "live socket integration" do
+		before do
+			skip "/proc/net TCP stats unavailable" unless IO::Metrics::Listener::Linux.supported?
+		end
+		
+		it "counts established TCP connections after accept" do
+			server = TCPServer.new("127.0.0.1", 0)
+			port = server.addr[1]
+			address = "127.0.0.1:#{port}"
+			client1 = client2 = accepted1 = accepted2 = nil
+			
+			begin
+				client1 = TCPSocket.new("127.0.0.1", port)
+				client2 = TCPSocket.new("127.0.0.1", port)
+				accepted1 = server.accept
+				accepted2 = server.accept
+				sleep 0.01
+				
+				stats = IO::Metrics::Listener::Linux.capture(addresses: [address])
+				row = find_listener(stats, address)
+				expect(row).not.to be_nil
+				expect(row.active_connections).to be >= 2
+			ensure
+				[client1, client2, accepted1, accepted2].compact.each(&:close) rescue nil
+				server.close
+			end
+		end
+		
+		it "captures Unix domain socket listeners" do
+			tmpfile = Tempfile.new("test_socket")
+			socket_path = tmpfile.path
+			tmpfile.close
+			tmpfile.unlink
+			server = UNIXServer.new(socket_path)
+			
+			begin
+				sleep 0.01
+				stats = IO::Metrics::Listener::Linux.capture(paths: [socket_path])
+				row = find_listener(stats, socket_path)
+				expect(row).to be_a(IO::Metrics::Listener)
+			ensure
+				server.close
+				File.unlink(socket_path) rescue nil
+			end
+		end
+		
+		it "counts Unix socket queued and active connections" do
+			tmpfile = Tempfile.new("test_socket")
+			socket_path = tmpfile.path
+			tmpfile.close
+			tmpfile.unlink
+			server = UNIXServer.new(socket_path)
+			client1 = client2 = accepted1 = nil
+			
+			begin
+				client1 = UNIXSocket.new(socket_path)
+				client2 = UNIXSocket.new(socket_path)
+				accepted1 = server.accept
+				sleep 0.01
+				
+				stats = IO::Metrics::Listener::Linux.capture(paths: [socket_path])
+				row = find_listener(stats, socket_path)
+				expect(row).not.to be_nil
+				expect(row.queue_size + row.active_connections).to be >= 1
+			ensure
+				[client1, client2, accepted1].compact.each(&:close) rescue nil
+				server.close
+				File.unlink(socket_path) rescue nil
+			end
+		end
+		
+		it "captures TCP and Unix listeners together" do
+			tcp_server = TCPServer.new("127.0.0.1", 0)
+			tcp_port = tcp_server.addr[1]
+			tcp_address = "127.0.0.1:#{tcp_port}"
+			
+			tmpfile = Tempfile.new("test_socket")
+			socket_path = tmpfile.path
+			tmpfile.close
+			tmpfile.unlink
+			unix_server = UNIXServer.new(socket_path)
+			
+			begin
+				sleep 0.01
+				stats = IO::Metrics::Listener::Linux.capture(
+					addresses: [tcp_address],
+					paths: [socket_path]
+				)
+				expect(find_listener(stats, tcp_address)).to be_a(IO::Metrics::Listener)
+				expect(find_listener(stats, socket_path)).to be_a(IO::Metrics::Listener)
+			ensure
+				tcp_server.close
+				unix_server.close
+				File.unlink(socket_path) rescue nil
+			end
+		end
+	end
+	
 	with ".parse_ipv4" do
 		it "can parse IPv4 addresses from hex format" do
 			# 0100007F = 127.0.0.1 (little-endian)
@@ -86,8 +186,10 @@ describe IO::Metrics::Listener::Linux do
 			# Line 1: 00000000:0016 = 0.0.0.0:22 (LISTEN)
 			# Line 2: 00000000:0CEA = 0.0.0.0:3306 (LISTEN)
 			# Line 3: 0100007F:1389 = 127.0.0.1:5001 (LISTEN)
-			keys = stats.map { |l| listener_display_key(l) }
-			expect(keys).to include("127.0.0.54:53", "0.0.0.0:22", "0.0.0.0:3306", "127.0.0.1:5001")
+			keys = stats.map { |listener| listener_display_key(listener) }
+			%w[127.0.0.54:53 0.0.0.0:22 0.0.0.0:3306 127.0.0.1:5001].each do |key|
+				expect(keys).to be(:include?, key)
+			end
 			
 			# Check queue sizes (all should be 0 in fixture)
 			stats.each do |listener|
@@ -128,8 +230,10 @@ describe IO::Metrics::Listener::Linux do
 			expect(stats).to be_a(Array)
 			
 			# Check specific Unix sockets from fixture
-			paths = stats.map { |l| l.address.unix_path }
-			expect(paths).to include("/run/user/1000/wayland-0", "/run/user/1000/bus", "/run/dbus/system_bus_socket")
+			paths = stats.map { |listener| listener.address.unix_path }
+			%w[/run/user/1000/wayland-0 /run/user/1000/bus /run/dbus/system_bus_socket].each do |path|
+				expect(paths).to be(:include?, path)
+			end
 			
 			# Check that queued and active connections are counted correctly
 			# From fixture: /run/user/1000/bus has 2 SS_CONNECTED (0x03) entries (lines 4-5)
@@ -146,9 +250,9 @@ describe IO::Metrics::Listener::Linux do
 			
 			stats = IO::Metrics::Listener::Linux.capture_unix(["/run/user/1000/bus"], file: fixture_path)
 			
-			paths = stats.map { |l| l.address.unix_path }
-			expect(paths).to include("/run/user/1000/bus")
-			expect(paths).not_to include("/run/user/1000/wayland-0")
+			paths = stats.map { |listener| listener.address.unix_path }
+			expect(paths).to be(:include?, "/run/user/1000/bus")
+			expect(paths).not.to be(:include?, "/run/user/1000/wayland-0")
 		end
 	end
 end
