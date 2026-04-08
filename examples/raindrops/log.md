@@ -215,3 +215,53 @@ connections).
 
 This is a separate, clearly reproducible bug independent of the original 2×
 report.
+
+---
+
+## Production investigation: checking for double-counting on port 9292
+
+If the dual-stack-in-both-proc-files hypothesis is the cause, it will be visible
+directly in the proc files. The easiest approach is to dump them and analyze
+offline.
+
+### Dump
+
+```bash
+cp /proc/net/tcp /tmp/proc_net_tcp.txt
+cp /proc/net/tcp6 /tmp/proc_net_tcp6.txt
+```
+
+Retrieve:
+
+```bash
+scp production:/tmp/proc_net_tcp.txt .
+scp production:/tmp/proc_net_tcp6.txt .
+```
+
+### Analyze offline
+
+Port 9292 = `245C` in hex.
+
+```bash
+echo "--- proc_net_tcp ---"
+awk '$4 == "0A" && $2 ~ /:245C$/' proc_net_tcp.txt
+
+echo "--- proc_net_tcp6 ---"
+awk '$4 == "0A" && $2 ~ /:245C$/' proc_net_tcp6.txt
+```
+
+**Smoking gun**: port 9292 appearing as a LISTEN row (`0A`) in *both* files means
+io-metrics counted the same socket twice.
+
+### Additional checks
+
+```bash
+# Ground truth — how many actual sockets are listening on 9292?
+ss -tlnp | grep ':9292'
+
+# Is the system default dual-stack? (0 = yes, 1 = v6-only)
+cat /proc/sys/net/ipv6/bindv6only
+
+# Per-socket detail including v6only flag
+ss -tlnpe | grep ':9292'
+```
