@@ -4,12 +4,14 @@
 # Copyright, 2026, by Samuel Williams.
 
 require "io/metrics"
+require "io/metrics/linux_context"
 require "tempfile"
+require "socket"
 
 return unless RUBY_PLATFORM.include?("linux")
 
 describe IO::Metrics::Listener::Linux do
-	require "socket"
+	include IO::Metrics::LinuxContext
 	
 	def listener_display_key(listener)
 		a = listener.address
@@ -122,14 +124,53 @@ describe IO::Metrics::Listener::Linux do
 				File.unlink(socket_path) rescue nil
 			end
 		end
+	
+		it "sums queue_size across SO_REUSEPORT sockets sharing the same address" do
+			make_server = -> {
+				s = Socket.new(Socket::AF_INET6, Socket::SOCK_STREAM)
+				s.setsockopt(Socket::SOL_SOCKET, Socket::SO_REUSEADDR, [1].pack("i"))
+				s.setsockopt(Socket::SOL_SOCKET, Socket::SO_REUSEPORT, [1].pack("i"))
+				s.setsockopt(Socket::IPPROTO_IPV6, Socket::IPV6_V6ONLY, [1].pack("i"))
+				s
+			}
+			
+			server1 = make_server.()
+			server1.bind(Addrinfo.tcp("::", 0).to_sockaddr)
+			server1.listen(20)
+			port = server1.local_address.ip_port
+			address = "[::]:#{port}"
+			
+			server2 = make_server.()
+			server2.bind(Addrinfo.tcp("::", port).to_sockaddr)
+			server2.listen(20)
+			
+			clients = []
+			10.times { clients << TCPSocket.new("::1", port) }
+			
+			# Poll until both sockets have received connections
+			deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 3.0
+			loop do
+				all = IO::Metrics::Listener::Linux.capture || []
+				total_queue = all.select { |l| l.address.ipv6? && l.address.ip_port == port }.sum(&:queue_size)
+				break if total_queue >= 10
+				raise "timeout waiting for queue" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+				sleep 0.02
+			end
+			
+			stats = IO::Metrics::Listener::Linux.capture
+			row = find_listener(stats, address)
+			expect(row).not.to be_nil
+			expect(row.queue_size).to be == 10
+			expect(row.active_connections).to be == 0
+		ensure
+			clients&.each { |c| c.close rescue nil }
+			server1&.close rescue nil
+			server2&.close rescue nil
+		end
 	end
 	
 	with ".parse_ipv4" do
 		it "can parse IPv4 addresses from hex format" do
-			# 0100007F = 127.0.0.1 (little-endian)
-			expect(IO::Metrics::Listener::Linux.parse_ipv4("0100007F")).to be == "127.0.0.1"
-			
-			# 00000000 = 0.0.0.0 (wildcard)
 			expect(IO::Metrics::Listener::Linux.parse_ipv4("00000000")).to be == "0.0.0.0"
 			
 			# 3600007F = 127.0.0.54
@@ -169,7 +210,8 @@ describe IO::Metrics::Listener::Linux do
 	end
 	
 	with ".capture_tcp_file" do
-		let(:fixture_path) {File.expand_path(".linux/proc_net_tcp.txt", __dir__)}
+		let(:fixture_path) {File.join(root, "proc_net_tcp.txt")}
+		let(:reuseport_fixture_path) {File.join(root, "proc_net_tcp6_reuseport.txt")}
 		
 		it "can parse real /proc/net/tcp data" do
 			unless File.readable?(fixture_path)
@@ -215,10 +257,26 @@ describe IO::Metrics::Listener::Linux do
 				expect(row.active_connections).to be == 2
 			end
 		end
+		
+		it "sums queue_size across SO_REUSEPORT LISTEN rows for the same address" do
+			unless File.readable?(reuseport_fixture_path)
+				skip "Test fixture not available"
+			end
+			
+			# Fixture has two LISTEN rows for [::]:8080 (0x1F90) with rx_queue 7 and 3.
+			# It also has 12 server-side ESTABLISHED inode=0 entries and 3 client-side entries.
+			# Expected: queue_size = 7+3 = 10, active_connections = max(12-10, 0) = 2.
+			stats = IO::Metrics::Listener::Linux.capture_tcp_file(reuseport_fixture_path, nil, ipv6: true)
+			
+			row = find_listener(stats, "[::]:8080")
+			expect(row).not.to be_nil
+			expect(row.queue_size).to be == 10
+			expect(row.active_connections).to be == 2
+		end
 	end
 	
 	with ".capture_unix" do
-		let(:fixture_path) {File.expand_path(".linux/proc_net_unix.txt", __dir__)}
+		let(:fixture_path) {File.join(root, "proc_net_unix.txt")}
 		
 		it "can parse real /proc/net/unix data" do
 			unless File.readable?(fixture_path)

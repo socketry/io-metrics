@@ -193,8 +193,9 @@ class IO
 							next if address_filter && !address_filter.include?(local_address.downcase)
 							
 							listeners[local_address] ||= Listener.new(Addrinfo.tcp(local_ip, local_port), 0, 0)
-							# rx_queue shows number of connections waiting to be accepted
-							listeners[local_address].queue_size = rx_queue_hex.to_i(16)
+						# rx_queue shows number of connections waiting to be accepted.
+						# Accumulate across SO_REUSEPORT sockets sharing the same address.
+						listeners[local_address].queue_size += rx_queue_hex.to_i(16)
 							listeners[local_address].active_connections = 0
 						# Collect ESTABLISHED connections to count later
 						elsif state == :established
