@@ -1,6 +1,6 @@
 # Releases
 
-## Unreleased
+## v0.2.1
 
   - Fixed `queue_size` under-reporting when multiple `SO_REUSEPORT` sockets share the same address — queue depths are now accumulated across all sockets rather than overwritten by the last one.
   - **Linux** `Listener#active_connections` for TCP no longer counts sockets that are still in the kernel accept queue (those remain in `queue_size`). Counts now match the usual “past `accept()`” meaning and align with tools such as Raindrops’ `ListenStats#active`.
