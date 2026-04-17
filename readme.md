@@ -14,6 +14,11 @@ Please see the [project documentation](https://socketry.github.io/io-metrics/) f
 
 Please see the [project releases](https://socketry.github.io/io-metrics/releases/index) for all releases.
 
+### v0.3.0
+
+  - **Breaking** Rename `Listener` fields: `queue_size` → `queued_count`, `active_connections` → `active_count`.
+  - Introduce `Listener#close_wait_count`: number of accepted connections in `CLOSE_WAIT` state (peer has closed; application still processing).
+
 ### v0.2.1
 
   - Fixed `queue_size` under-reporting when multiple `SO_REUSEPORT` sockets share the same address — queue depths are now accumulated across all sockets rather than overwritten by the last one.
@@ -22,7 +27,7 @@ Please see the [project releases](https://socketry.github.io/io-metrics/releases
 ### v0.2.0
 
   - **Breaking** `IO::Metrics::Listener.capture` returns an `Array` of `Listener` rows instead of a `Hash` keyed by address string.
-  - Each `Listener` has `address` (`Addrinfo` for TCP or Unix), `queued_count`, `active_count`, and `close_wait_count`. `Listener.zero` sets `address` to `nil`. JSON uses `Addrinfo#inspect_sockaddr` for `address`, or `null` when absent.
+  - Each `Listener` has `address` (`Addrinfo` for TCP or Unix), `queue_size`, and `active_connections`. `Listener.zero` sets `address` to `nil`. JSON uses `Addrinfo#inspect_sockaddr` for `address`, or `null` when absent.
 
 ## Contributing
 

@@ -1,6 +1,6 @@
 # Releases
 
-## Unreleased
+## v0.3.0
 
   - **Breaking** Rename `Listener` fields: `queue_size` → `queued_count`, `active_connections` → `active_count`.
   - Introduce `Listener#close_wait_count`: number of accepted connections in `CLOSE_WAIT` state (peer has closed; application still processing).
