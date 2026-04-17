@@ -16,7 +16,7 @@ describe IO::Metrics::Listener do
 	end
 	
 	def find_listener(stats, key)
-		stats.find { |listener| listener_display_key(listener) == key }
+		stats.find{|listener| listener_display_key(listener) == key}
 	end
 	
 	# Wait until capture reports at least the given accept-queue depth (fully established, not yet accepted).
@@ -28,9 +28,9 @@ describe IO::Metrics::Listener do
 			next unless stats
 			
 			row = find_listener(stats, address)
-			return row if row && row.queue_size >= minimum
+			return row if row && row.queued_count >= minimum
 			
-			raise "timed out waiting for queue_size >= #{minimum} on #{address}" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+			raise "timed out waiting for queued_count >= #{minimum} on #{address}" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
 			
 			sleep interval
 		end
@@ -42,8 +42,9 @@ describe IO::Metrics::Listener do
 			
 			expect(listener).to have_attributes(
 				address: be_nil,
-				queue_size: be == 0,
-				active_connections: be == 0
+				queued_count: be == 0,
+				active_count: be == 0,
+				close_wait_count: be == 0
 			)
 		end
 		
@@ -51,8 +52,9 @@ describe IO::Metrics::Listener do
 			json = JSON.parse(IO::Metrics::Listener.zero.to_json)
 			
 			expect(json["address"]).to be_nil
-			expect(json["queue_size"]).to be == 0
-			expect(json["active_connections"]).to be == 0
+			expect(json["queued_count"]).to be == 0
+			expect(json["active_count"]).to be == 0
+			expect(json["close_wait_count"]).to be == 0
 		end
 	end
 	
@@ -114,8 +116,8 @@ describe IO::Metrics::Listener do
 			stats.each do |listener|
 				expect(listener).to be_a(IO::Metrics::Listener)
 				expect(listener.address).to be_a(Addrinfo)
-				expect(listener.queue_size).to be >= 0
-				expect(listener.active_connections).to be >= 0
+				expect(listener.queued_count).to be >= 0
+				expect(listener.active_count).to be >= 0
 			end
 		end
 		
@@ -131,10 +133,10 @@ describe IO::Metrics::Listener do
 			json_string = listener.to_json
 			json = JSON.parse(json_string)
 			
-			expect(json).to have_keys("address", "queue_size", "active_connections")
+			expect(json).to have_keys("address", "queued_count", "active_count", "close_wait_count")
 			expect(json["address"]).to be_a(String)
-			expect(json["queue_size"]).to be_a(Integer)
-			expect(json["active_connections"]).to be_a(Integer)
+			expect(json["queued_count"]).to be_a(Integer)
+			expect(json["active_count"]).to be_a(Integer)
 		end
 		
 		with "TCP accept queue" do
@@ -155,13 +157,13 @@ describe IO::Metrics::Listener do
 					threads = n.times.map do
 						Thread.new do
 							c = TCPSocket.new("127.0.0.1", port)
-							clients_mutex.synchronize { clients << c }
+							clients_mutex.synchronize{clients << c}
 						end
 					end
 					threads.each(&:join)
 					
 					row = wait_for_tcp_queue_at_least(address, n)
-					expect(row.queue_size).to be == n
+					expect(row.queued_count).to be == n
 				ensure
 					clients.each(&:close) rescue nil
 					server.close
@@ -187,22 +189,22 @@ describe IO::Metrics::Listener do
 					threads = total.times.map do
 						Thread.new do
 							c = TCPSocket.new("127.0.0.1", port)
-							clients_mutex.synchronize { clients << c }
+							clients_mutex.synchronize{clients << c}
 						end
 					end
 					threads.each(&:join)
 					
 					wait_for_tcp_queue_at_least(address, total)
 					
-					accept_count.times { accepted << server.accept }
+					accept_count.times{accepted << server.accept}
 					sleep 0.02
 					
 					stats = IO::Metrics::Listener.capture(addresses: [address])
 					row = find_listener(stats, address)
 					expect(row).not.to be_nil
-					expect(row.queue_size).to be == (total - accept_count)
+					expect(row.queued_count).to be == (total - accept_count)
 					if RUBY_PLATFORM.include?("linux")
-						expect(row.active_connections).to be >= accept_count
+						expect(row.active_count).to be >= accept_count
 					end
 				ensure
 					clients.each(&:close) rescue nil
@@ -233,13 +235,13 @@ describe IO::Metrics::Listener do
 					threads = n.times.map do
 						Thread.new do
 							c = TCPSocket.new("::1", port)
-							clients_mutex.synchronize { clients << c }
+							clients_mutex.synchronize{clients << c}
 						end
 					end
 					threads.each(&:join)
 					
 					row = wait_for_tcp_queue_at_least(address, n)
-					expect(row.queue_size).to be == n
+					expect(row.queued_count).to be == n
 				ensure
 					clients.each(&:close) rescue nil
 					server.close

@@ -11,24 +11,24 @@ require "io/metrics"
 require "raindrops"
 require "socket"
 
-PORT_HEX = ->(port) { format("%04X", port) }
+PORT_HEX = ->(port){format("%04X", port)}
 
 # ─── helpers ────────────────────────────────────────────────────────────────
 
 def proc_lines_for_port(port)
 	hex = PORT_HEX.(port)
 	{
-		tcp:  File.readlines("/proc/net/tcp").select  { |l| l.include?(hex) },
-		tcp6: File.readlines("/proc/net/tcp6").select { |l| l.include?(hex) },
+		tcp:  File.readlines("/proc/net/tcp").select{|l| l.include?(hex)},
+		tcp6: File.readlines("/proc/net/tcp6").select{|l| l.include?(hex)},
 	}
 end
 
 def print_proc(port)
 	lines = proc_lines_for_port(port)
 	puts "  /proc/net/tcp  (#{lines[:tcp].size} lines):"
-	lines[:tcp].each  { |l| puts "    #{l.rstrip}" }
+	lines[:tcp].each{|l| puts "    #{l.rstrip}"}
 	puts "  /proc/net/tcp6 (#{lines[:tcp6].size} lines):"
-	lines[:tcp6].each { |l| puts "    #{l.rstrip}" }
+	lines[:tcp6].each{|l| puts "    #{l.rstrip}"}
 end
 
 def library_results(port)
@@ -37,31 +37,31 @@ def library_results(port)
 	metrics = all_metrics.select do |l|
 		l.address && (l.address.ip_port == port rescue false)
 	end
-
+	
 	# raindrops
 	rd_all = Raindrops::Linux.tcp_listener_stats(nil)
 	hex = PORT_HEX.(port).upcase
 	raindrops = rd_all.select do |key, _|
 		key.to_s =~ /:#{port}\z/
 	end
-
+	
 	{metrics: metrics, raindrops: raindrops}
 end
 
 def print_results(label, port)
 	puts "\n── #{label} ──"
 	r = library_results(port)
-
+	
 	puts "  io-metrics:"
 	if r[:metrics].empty?
 		puts "    (none)"
 	else
 		r[:metrics].each do |l|
-			puts "    #{l.address.inspect_sockaddr}  queue=#{l.queue_size}  active=#{l.active_connections}"
+			puts "    #{l.address.inspect_sockaddr}  queued=#{l.queued_count}  active=#{l.active_count}"
 		end
 	end
-	total_metrics_q = r[:metrics].sum(&:queue_size)
-
+	total_metrics_q = r[:metrics].sum(&:queued_count)
+	
 	puts "  raindrops:"
 	if r[:raindrops].empty?
 		puts "    (none)"
@@ -71,7 +71,7 @@ def print_results(label, port)
 		end
 	end
 	total_rd_q = r[:raindrops].values.sum(&:queued)
-
+	
 	ratio = total_rd_q > 0 ? (total_metrics_q.to_f / total_rd_q).round(2) : "inf"
 	puts "  TOTALS: io-metrics queue=#{total_metrics_q}  raindrops queued=#{total_rd_q}  ratio=#{ratio}"
 	puts "  raw /proc:"
@@ -82,7 +82,7 @@ def wait_for_queue(min_q, port, timeout: 3.0)
 	deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
 	loop do
 		all = IO::Metrics::Listener.capture || []
-		total = all.select { |l| l.address && (l.address.ip_port == port rescue false) }.sum(&:queue_size)
+		total = all.select{|l| l.address && (l.address.ip_port == port rescue false)}.sum(&:queued_count)
 		return true if total >= min_q
 		raise "timeout waiting for queue #{min_q} on port #{port}" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
 		sleep 0.02
@@ -103,8 +103,8 @@ port1 = server1.addr[1]
 print_results("idle", port1)
 
 clients1 = []
-5.times { clients1 << TCPSocket.new("127.0.0.1", port1) }
-5.times { clients1 << TCPSocket.new("::1", port1) }
+5.times{clients1 << TCPSocket.new("127.0.0.1", port1)}
+5.times{clients1 << TCPSocket.new("::1", port1)}
 wait_for_queue(10, port1)
 print_results("10 connected (5×IPv4 + 5×IPv6), none accepted", port1)
 
@@ -124,7 +124,7 @@ port2 = server2.addr[1]
 print_results("idle", port2)
 
 clients2 = []
-10.times { clients2 << TCPSocket.new("::1", port2) }
+10.times{clients2 << TCPSocket.new("::1", port2)}
 wait_for_queue(10, port2)
 print_results("10 IPv6 clients, none accepted", port2)
 
@@ -150,8 +150,8 @@ server3_v6.listen(20)
 print_results("idle — two separate sockets", port3)
 
 clients3 = []
-5.times { clients3 << TCPSocket.new("127.0.0.1", port3) }
-5.times { clients3 << TCPSocket.new("::1", port3) }
+5.times{clients3 << TCPSocket.new("127.0.0.1", port3)}
+5.times{clients3 << TCPSocket.new("::1", port3)}
 wait_for_queue(10, port3)
 print_results("10 connected (5×IPv4 via v4 sock, 5×IPv6 via v6 sock), none accepted", port3)
 
@@ -187,7 +187,7 @@ print_results("idle — two SO_REUSEPORT sockets", port4)
 
 clients4 = []
 # Connect enough to hopefully fill both accept queues
-20.times { clients4 << TCPSocket.new("::1", port4) }
+20.times{clients4 << TCPSocket.new("::1", port4)}
 sleep 0.1
 print_results("20 IPv6 clients — io-metrics (assigns last rx_queue) vs raindrops (sums idiag_rqueue)", port4)
 
@@ -218,7 +218,7 @@ server4c_v6.listen(20)
 print_results("idle — IPv4 (0.0.0.0) + dual-stack ([::]) REUSEPORT", port4b)
 
 clients4b = []
-10.times { clients4b << TCPSocket.new("127.0.0.1", port4b) }
+10.times{clients4b << TCPSocket.new("127.0.0.1", port4b)}
 sleep 0.1
 print_results("10 IPv4 clients — key question: does io-metrics double-count [::] AND 0.0.0.0?", port4b)
 
@@ -237,11 +237,11 @@ server5.listen(20)
 port5 = server5.addr[1]
 
 clients5 = []
-10.times { clients5 << TCPSocket.new("::1", port5) }
+10.times{clients5 << TCPSocket.new("::1", port5)}
 wait_for_queue(10, port5)
 print_results("10 connected, none accepted", port5)
 
-accepted5 = 4.times.map { server5.accept }
+accepted5 = 4.times.map{server5.accept}
 sleep 0.05
 print_results("4 accepted (should be queue=6, active=4)", port5)
 

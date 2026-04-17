@@ -48,7 +48,7 @@ end
 
 def raindrops_lookup(raindrops_by_address, display_key)
 	raindrops_by_address[display_key] ||
-		raindrops_by_address.find { |listener_key, _| listener_key.to_s.downcase == display_key.downcase }&.last
+		raindrops_by_address.find{|listener_key, _| listener_key.to_s.downcase == display_key.downcase}&.last
 end
 
 # Snapshot all TCP listeners on +port+ from both libraries (full capture + all tcp_listener_stats).
@@ -66,15 +66,15 @@ def sample_by_port(port)
 		port_from_listener_key(listener_key) == port
 	end
 	
-	ipv4_metrics = tcp_on_port.select { |listener| listener.address.ipv4? }
-	ipv6_metrics = tcp_on_port.select { |listener| listener.address.ipv6? }
+	ipv4_metrics = tcp_on_port.select{|listener| listener.address.ipv4?}
+	ipv6_metrics = tcp_on_port.select{|listener| listener.address.ipv6?}
 	
-	raindrops_ipv4 = raindrops_on_port.reject { |listener_key, _| listener_key.to_s.start_with?("[") }
-	raindrops_ipv6 = raindrops_on_port.select { |listener_key, _| listener_key.to_s.start_with?("[") }
+	raindrops_ipv4 = raindrops_on_port.reject{|listener_key, _| listener_key.to_s.start_with?("[")}
+	raindrops_ipv6 = raindrops_on_port.select{|listener_key, _| listener_key.to_s.start_with?("[")}
 	
 	combined = {
-		metrics_queued: tcp_on_port.sum(&:queue_size),
-		metrics_active: tcp_on_port.sum(&:active_connections),
+		metrics_queued: tcp_on_port.sum(&:queued_count),
+		metrics_active: tcp_on_port.sum(&:active_count),
 		raindrops_queued: raindrops_on_port.values.sum(&:queued),
 		raindrops_active: raindrops_on_port.values.sum(&:active),
 	}
@@ -82,8 +82,8 @@ def sample_by_port(port)
 	subtotal = lambda do |metrics_rows, raindrops_pairs|
 		rd_hash = raindrops_pairs.to_h
 		{
-			metrics_queued: metrics_rows.sum(&:queue_size),
-			metrics_active: metrics_rows.sum(&:active_connections),
+			metrics_queued: metrics_rows.sum(&:queued_count),
+			metrics_active: metrics_rows.sum(&:active_count),
 			raindrops_queued: rd_hash.values.sum(&:queued),
 			raindrops_active: rd_hash.values.sum(&:active),
 		}
@@ -119,8 +119,8 @@ def print_metrics_table(title, snapshot)
 				key = listener_display_key(listener)
 				stats = raindrops_lookup(rd_hash, key)
 				printf ROW_FORMAT, "    #{key}",
-					listener.queue_size,
-					listener.active_connections,
+					listener.queued_count,
+					listener.active_count,
 					stats&.queued.inspect,
 					stats&.active.inspect
 			end
@@ -169,13 +169,13 @@ begin
 	n_ipv4.times do
 		threads << Thread.new do
 			client_socket = TCPSocket.new("127.0.0.1", port)
-			mutex.synchronize { clients << client_socket }
+			mutex.synchronize{clients << client_socket}
 		end
 	end
 	n_ipv6.times do
 		threads << Thread.new do
 			client_socket = TCPSocket.new("::1", port)
-			mutex.synchronize { clients << client_socket }
+			mutex.synchronize{clients << client_socket}
 		end
 	end
 	threads.each(&:join)
@@ -195,7 +195,7 @@ begin
 	print_metrics_table("--- #{n_total} connected (#{n_ipv4} IPv4 + #{n_ipv6} IPv6), no accept ---", peak_connected)
 	
 	accept_count = 4
-	accepted.replace(accept_count.times.map { server.accept })
+	accepted.replace(accept_count.times.map{server.accept})
 	
 	sleep 0.05
 	after_accept = sample_by_port(port)

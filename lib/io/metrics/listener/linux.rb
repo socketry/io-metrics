@@ -161,8 +161,9 @@ class IO
 				listeners = {}
 				address_filter = addresses ? addresses.map{|address| address.downcase}.to_set : nil
 				connections = []
+				close_wait_connections = []
 				
-				# Single pass: collect LISTEN sockets and ESTABLISHED connections
+				# Single pass: collect LISTEN sockets, ESTABLISHED, and CLOSE_WAIT connections
 				File.foreach(file) do |line|
 					next if line.start_with?("sl")
 					
@@ -192,13 +193,14 @@ class IO
 							# Apply filter if specified
 							next if address_filter && !address_filter.include?(local_address.downcase)
 							
-							listeners[local_address] ||= Listener.new(Addrinfo.tcp(local_ip, local_port), 0, 0)
-						# rx_queue shows number of connections waiting to be accepted.
-						# Accumulate across SO_REUSEPORT sockets sharing the same address.
-						listeners[local_address].queue_size += rx_queue_hex.to_i(16)
-							listeners[local_address].active_connections = 0
-						# Collect ESTABLISHED connections to count later
-						elsif state == :established
+							listeners[local_address] ||= Listener.new(Addrinfo.tcp(local_ip, local_port), 0, 0, 0)
+							# rx_queue shows number of connections waiting to be accepted.
+							# Accumulate across SO_REUSEPORT sockets sharing the same address.
+							listeners[local_address].queued_count += rx_queue_hex.to_i(16)
+							listeners[local_address].active_count = 0
+							listeners[local_address].close_wait_count = 0
+						# Collect ESTABLISHED and CLOSE_WAIT connections to count later
+						elsif state == :established || state == :close_wait
 							if ipv6
 								local_ip = parse_ipv6(local_ip_hex)
 								local_address = "[#{local_ip}]:#{parse_port(local_port_hex)}"
@@ -207,7 +209,11 @@ class IO
 								local_port = parse_port(local_port_hex)
 								local_address = "#{local_ip}:#{local_port}"
 							end
-							connections << local_address
+							if state == :established
+								connections << local_address
+							else
+								close_wait_connections << local_address
+							end
 						end
 					end
 				end
@@ -215,16 +221,26 @@ class IO
 				# Count ESTABLISHED connections for each listener
 				connections.each do |local_address|
 					if listener_address = find_matching_listener(local_address, listeners)
-						listeners[listener_address].active_connections += 1
+						listeners[listener_address].active_count += 1
+					end
+				end
+				
+				# Count CLOSE_WAIT connections for each listener.
+				# These are accepted connections where the peer has closed its end but the
+				# application has not yet closed its side (e.g. still in rack.response_finished
+				# callbacks, or processing a request whose upstream already disconnected).
+				close_wait_connections.each do |local_address|
+					if listener_address = find_matching_listener(local_address, listeners)
+						listeners[listener_address].close_wait_count += 1
 					end
 				end
 				
 				# /proc lists every ESTABLISHED child with the listener's local address, including
-				# sockets still in the accept queue. Those are already counted in queue_size on the
+				# sockets still in the accept queue. Those are already counted in queued_count on the
 				# LISTEN row (same meaning as Raindrops inet_diag queued vs inode != 0 for active).
 				listeners.each_value do |listener|
-					backlog = listener.queue_size
-					listener.active_connections = [listener.active_connections - backlog, 0].max
+					backlog = listener.queued_count
+					listener.active_count = [listener.active_count - backlog, 0].max
 				end
 				
 				return listeners
@@ -263,13 +279,13 @@ class IO
 					
 					state = state_hex.to_i(16)
 					
-					listeners[path] ||= Listener.new(Addrinfo.unix(path), 0, 0)
+					listeners[path] ||= Listener.new(Addrinfo.unix(path), 0, 0, 0)
 					
 					case state
 					when SS_CONNECTING # Queued connections
-						listeners[path].queue_size += 1
+						listeners[path].queued_count += 1
 					when SS_CONNECTED # Active connections
-						listeners[path].active_connections += 1
+						listeners[path].active_count += 1
 					end
 				end
 				

@@ -9,15 +9,17 @@ class IO
 	module Metrics
 		# Represents a network listener socket with its queue statistics.
 		# @attribute address [Addrinfo | Nil] Listening endpoint from capture; nil only for {Listener.zero} placeholders.
-		# @attribute queue_size [Integer] Number of connections waiting to be accepted (queued).
-		# @attribute active_connections [Integer] Number of active connections (already accepted).
-		class Listener < Struct.new(:address, :queue_size, :active_connections)
+		# @attribute queued_count [Integer] Number of connections waiting to be accepted (currently in the accept queue).
+		# @attribute active_count [Integer] Number of accepted connections in ESTABLISHED state.
+		# @attribute close_wait_count [Integer] Number of accepted connections in CLOSE_WAIT state (peer has closed; application still processing).
+		class Listener < Struct.new(:address, :queued_count, :active_count, :close_wait_count)
 			# Serialize for JSON; address uses Addrinfo#inspect_sockaddr.
 			def as_json(*)
 				{
 					address: address&.inspect_sockaddr,
-					queue_size: queue_size,
-					active_connections: active_connections,
+					queued_count: queued_count,
+					active_count: active_count,
+					close_wait_count: close_wait_count,
 				}
 			end
 			
@@ -29,7 +31,7 @@ class IO
 			# Create a zero-initialized Listener instance (no endpoint; for tests or templates).
 			# @returns [Listener] Counters zero; {#address} is nil.
 			def self.zero
-				new(nil, 0, 0)
+				new(nil, 0, 0, 0)  # address, queued_count, active_count, close_wait_count
 			end
 			
 			# Whether listener stats can be captured on this system.

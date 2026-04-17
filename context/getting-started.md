@@ -22,7 +22,7 @@ if IO::Metrics::Listener.supported?
 	listeners = IO::Metrics::Listener.capture
 	
 	listeners.each do |address, listener|
-		puts "#{address}: queue_size=#{listener.queue_size}, active=#{listener.active_connections}"
+		puts "#{address}: queued=#{listener.queued_count}, active=#{listener.active_count}, close_wait=#{listener.close_wait_count}"
 	end
 end
 ~~~
@@ -55,5 +55,6 @@ listeners = IO::Metrics::Listener.capture(addresses: ["0.0.0.0:80"], paths: ["/t
 
 Each `IO::Metrics::Listener` value provides:
 
-- `queue_size`: Number of connections waiting to be accepted (the listen backlog).
-- `active_connections`: Number of active established connections to this listener.
+- `queued_count`: Number of connections currently waiting to be accepted (in the accept queue).
+- `active_count`: Number of accepted connections in ESTABLISHED state.
+- `close_wait_count`: Number of accepted connections in CLOSE_WAIT state (peer has closed; application still processing).

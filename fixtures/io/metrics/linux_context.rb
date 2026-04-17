@@ -7,6 +7,6 @@ require "sus/shared"
 
 module IO::Metrics
 	LinuxContext = Sus::Shared("linux context") do
-		let(:root) {File.join(__dir__, "linux")}
+		let(:root){File.join(__dir__, "linux")}
 	end
 end
