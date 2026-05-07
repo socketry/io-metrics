@@ -163,6 +163,7 @@ class IO
 				connections = []
 				close_wait_connections = []
 				fin_wait_connections = []
+				time_wait_connections = []
 				
 				# Single pass: collect LISTEN sockets and tracked connection states.
 				File.foreach(file) do |line|
@@ -194,15 +195,16 @@ class IO
 							# Apply filter if specified
 							next if address_filter && !address_filter.include?(local_address.downcase)
 							
-							listeners[local_address] ||= Listener.new(Addrinfo.tcp(local_ip, local_port), 0, 0, 0, 0)
+							listeners[local_address] ||= Listener.new(Addrinfo.tcp(local_ip, local_port), 0, 0, 0, 0, 0)
 							# rx_queue shows number of connections waiting to be accepted.
 							# Accumulate across SO_REUSEPORT sockets sharing the same address.
 							listeners[local_address].queued_count += rx_queue_hex.to_i(16)
 							listeners[local_address].active_count = 0
 							listeners[local_address].close_wait_count = 0
 							listeners[local_address].fin_wait_count = 0
+							listeners[local_address].time_wait_count = 0
 						elsif state == :established || state == :close_wait ||
-								state == :fin_wait1 || state == :fin_wait2
+								state == :fin_wait1 || state == :fin_wait2 || state == :time_wait
 							if ipv6
 								local_ip = parse_ipv6(local_ip_hex)
 								local_address = "[#{local_ip}]:#{parse_port(local_port_hex)}"
@@ -212,9 +214,10 @@ class IO
 								local_address = "#{local_ip}:#{local_port}"
 							end
 							case state
-							when :established   then connections << local_address
-							when :close_wait    then close_wait_connections << local_address
-							when :fin_wait1, :fin_wait2 then fin_wait_connections << local_address
+							when :established            then connections << local_address
+							when :close_wait             then close_wait_connections << local_address
+							when :fin_wait1, :fin_wait2  then fin_wait_connections << local_address
+							when :time_wait              then time_wait_connections << local_address
 							end
 						end
 					end
@@ -243,6 +246,16 @@ class IO
 				fin_wait_connections.each do |local_address|
 					if listener_address = find_matching_listener(local_address, listeners)
 						listeners[listener_address].fin_wait_count += 1
+					end
+				end
+				
+				# Count TIME_WAIT connections for each listener.
+				# Both sides have closed; the kernel holds the socket for ~60s (2×MSL) to
+				# absorb delayed packets. These consume file descriptors but represent no
+				# active work. High counts indicate fast connection churn.
+				time_wait_connections.each do |local_address|
+					if listener_address = find_matching_listener(local_address, listeners)
+						listeners[listener_address].time_wait_count += 1
 					end
 				end
 				
@@ -290,7 +303,7 @@ class IO
 					
 					state = state_hex.to_i(16)
 					
-					listeners[path] ||= Listener.new(Addrinfo.unix(path), 0, 0, 0, 0)
+					listeners[path] ||= Listener.new(Addrinfo.unix(path), 0, 0, 0, 0, 0)
 					
 					case state
 					when SS_CONNECTING # Queued connections

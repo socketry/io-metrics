@@ -85,7 +85,7 @@ class IO
 							# Apply filter if specified
 							next if address_filter && !address_filter.include?(key.downcase)
 							
-							listeners[key] ||= Listener.new(addrinfo, 0, 0, 0)
+							listeners[key] ||= Listener.new(addrinfo, 0, 0, 0, 0, 0)
 							listeners[key].queued_count = queue_length
 							
 							# active_count and close_wait_count set to 0 (netstat -L doesn't expose connection states)

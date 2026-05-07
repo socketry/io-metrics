@@ -57,6 +57,32 @@ describe IO::Metrics::Listener::Linux do
 			end
 		end
 		
+		it "counts time_wait connections after both sides close" do
+			server = TCPServer.new("127.0.0.1", 0)
+			port = server.addr[1]
+			address = "127.0.0.1:#{port}"
+			
+			begin
+				client   = TCPSocket.new("127.0.0.1", port)
+				accepted = server.accept
+				
+				# Server closes first → FIN_WAIT1/2 on server, CLOSE_WAIT on client.
+				# Then client closes → server enters TIME_WAIT.
+				accepted.close
+				sleep 0.02
+				client.close
+				sleep 0.05
+				
+				stats = IO::Metrics::Listener::Linux.capture(addresses: [address])
+				row = find_listener(stats, address)
+				expect(row).not.to be_nil
+				expect(row.time_wait_count).to be >= 1
+			ensure
+				server.close rescue nil
+			end
+		end
+		
+		
 		it "counts close_wait connections while application holds socket open" do
 			server = TCPServer.new("127.0.0.1", 0)
 			port = server.addr[1]
