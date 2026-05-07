@@ -162,8 +162,9 @@ class IO
 				address_filter = addresses ? addresses.map{|address| address.downcase}.to_set : nil
 				connections = []
 				close_wait_connections = []
+				fin_wait_connections = []
 				
-				# Single pass: collect LISTEN sockets, ESTABLISHED, and CLOSE_WAIT connections
+				# Single pass: collect LISTEN sockets and tracked connection states.
 				File.foreach(file) do |line|
 					next if line.start_with?("sl")
 					
@@ -193,14 +194,15 @@ class IO
 							# Apply filter if specified
 							next if address_filter && !address_filter.include?(local_address.downcase)
 							
-							listeners[local_address] ||= Listener.new(Addrinfo.tcp(local_ip, local_port), 0, 0, 0)
+							listeners[local_address] ||= Listener.new(Addrinfo.tcp(local_ip, local_port), 0, 0, 0, 0)
 							# rx_queue shows number of connections waiting to be accepted.
 							# Accumulate across SO_REUSEPORT sockets sharing the same address.
 							listeners[local_address].queued_count += rx_queue_hex.to_i(16)
 							listeners[local_address].active_count = 0
 							listeners[local_address].close_wait_count = 0
-						# Collect ESTABLISHED and CLOSE_WAIT connections to count later
-						elsif state == :established || state == :close_wait
+							listeners[local_address].fin_wait_count = 0
+						elsif state == :established || state == :close_wait ||
+								state == :fin_wait1 || state == :fin_wait2
 							if ipv6
 								local_ip = parse_ipv6(local_ip_hex)
 								local_address = "[#{local_ip}]:#{parse_port(local_port_hex)}"
@@ -209,16 +211,16 @@ class IO
 								local_port = parse_port(local_port_hex)
 								local_address = "#{local_ip}:#{local_port}"
 							end
-							if state == :established
-								connections << local_address
-							else
-								close_wait_connections << local_address
+							case state
+							when :established   then connections << local_address
+							when :close_wait    then close_wait_connections << local_address
+							when :fin_wait1, :fin_wait2 then fin_wait_connections << local_address
 							end
 						end
 					end
 				end
 				
-				# Count ESTABLISHED connections for each listener
+				# Count ESTABLISHED connections for each listener.
 				connections.each do |local_address|
 					if listener_address = find_matching_listener(local_address, listeners)
 						listeners[listener_address].active_count += 1
@@ -226,12 +228,21 @@ class IO
 				end
 				
 				# Count CLOSE_WAIT connections for each listener.
-				# These are accepted connections where the peer has closed its end but the
-				# application has not yet closed its side (e.g. still in rack.response_finished
-				# callbacks, or processing a request whose upstream already disconnected).
+				# Peer has closed its end; application still holds the socket
+				# (e.g. running rack.response_finished callbacks).
 				close_wait_connections.each do |local_address|
 					if listener_address = find_matching_listener(local_address, listeners)
 						listeners[listener_address].close_wait_count += 1
+					end
+				end
+				
+				# Count FIN_WAIT1 + FIN_WAIT2 connections for each listener.
+				# Server has sent FIN (initiated close), waiting for peer to finish closing.
+				# FIN_WAIT1 is extremely brief (ACK in transit); FIN_WAIT2 persists until
+				# the peer sends its FIN — both represent the same "server-initiated close" phase.
+				fin_wait_connections.each do |local_address|
+					if listener_address = find_matching_listener(local_address, listeners)
+						listeners[listener_address].fin_wait_count += 1
 					end
 				end
 				
@@ -279,7 +290,7 @@ class IO
 					
 					state = state_hex.to_i(16)
 					
-					listeners[path] ||= Listener.new(Addrinfo.unix(path), 0, 0, 0)
+					listeners[path] ||= Listener.new(Addrinfo.unix(path), 0, 0, 0, 0)
 					
 					case state
 					when SS_CONNECTING # Queued connections

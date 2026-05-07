@@ -33,6 +33,30 @@ describe IO::Metrics::Listener::Linux do
 			skip "/proc/net TCP stats unavailable" unless IO::Metrics::Listener::Linux.supported?
 		end
 		
+		it "counts fin_wait connections while server has initiated close" do
+			server = TCPServer.new("127.0.0.1", 0)
+			port = server.addr[1]
+			address = "127.0.0.1:#{port}"
+			
+			begin
+				client   = TCPSocket.new("127.0.0.1", port)
+				accepted = server.accept
+				@to_close = [client]  # keep client open so we stay in FIN_WAIT2
+				
+				# Server closes its side first → FIN_WAIT1 → FIN_WAIT2.
+				accepted.close
+				sleep 0.05
+				
+				stats = IO::Metrics::Listener::Linux.capture(addresses: [address])
+				row = find_listener(stats, address)
+				expect(row).not.to be_nil
+				expect(row.fin_wait_count).to be >= 1
+			ensure
+				@to_close&.each{|s| s.close rescue nil}
+				server.close rescue nil
+			end
+		end
+		
 		it "counts close_wait connections while application holds socket open" do
 			server = TCPServer.new("127.0.0.1", 0)
 			port = server.addr[1]
