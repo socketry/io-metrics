@@ -3,6 +3,27 @@
 # Released under the MIT License.
 # Copyright, 2025-2026, by Samuel Williams.
 
+def build
+	ext_path = File.expand_path("ext", __dir__)
+	
+	Dir.chdir(ext_path) do
+		system("ruby ./extconf.rb") or raise "extconf.rb failed"
+		system("make") or raise "make failed"
+	end
+end
+
+def clean
+	ext_path = File.expand_path("ext", __dir__)
+	
+	Dir.chdir(ext_path) do
+		system("make clean")
+	end
+end
+
+def before_test
+	self.build
+end
+
 # Update the project documentation with the new version number.
 #
 # @parameter version [String] The new version number.

@@ -56,7 +56,11 @@ class IO
 end
 
 if RUBY_PLATFORM.include?("linux")
-	require_relative "listener/linux"
+	begin
+		require_relative "listener/native"
+	rescue LoadError
+		require_relative "listener/linux"
+	end
 elsif RUBY_PLATFORM.include?("darwin")
 	require_relative "listener/darwin"
 end

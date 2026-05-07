@@ -5,6 +5,7 @@
 
 source "https://rubygems.org"
 
+# gemspec includes a native C extension (ext/extconf.rb) for Linux netlink inet_diag.
 gemspec
 
 gem "bake"
