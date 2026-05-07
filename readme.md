@@ -14,6 +14,12 @@ Please see the [project documentation](https://socketry.github.io/io-metrics/) f
 
 Please see the [project releases](https://socketry.github.io/io-metrics/releases/index) for all releases.
 
+### v0.4.0
+
+  - Introduce `Listener#fin_wait_count`: connections in `FIN_WAIT1` or `FIN_WAIT2` state — server has sent FIN (initiated close) and is waiting for the peer to finish closing. Symmetric counterpart to `close_wait_count`.
+  - Introduce `Listener#time_wait_count`: connections in `TIME_WAIT` state — both sides have closed; the kernel holds the socket for \~60s (2×MSL) to absorb delayed packets. High counts indicate fast connection churn.
+  - Fix `parse_address` for IPv6 listeners: replace non-existent `Addrinfo.parse` with an explicit `[ipv6addr].port` pattern match.
+
 ### v0.3.0
 
   - **Breaking** Rename `Listener` fields: `queue_size` → `queued_count`, `active_connections` → `active_count`.
