@@ -33,12 +33,14 @@ class IO
 					return Addrinfo.tcp(ip, port)
 				end
 				
-				# Handle IPv6 or other formats: best-effort via Addrinfo.parse
-				begin
-					Addrinfo.parse(address)
-				rescue ArgumentError, SocketError
-					nil
+				# Handle IPv6: [::1].8080, [fe80::1%lo0].8080, [::].8080
+				if address =~ /\A\[([^\]]+)\]\.(\d+)\z/
+					ip = $1.sub(/%.*\z/, "")  # strip zone ID (e.g. %lo0)
+					port = $2.to_i
+					return Addrinfo.tcp(ip, port)
 				end
+				
+				nil
 			end
 			
 			# Build a stable string key for TCP listener filter matching (same style as Linux / user filters).
