@@ -17,7 +17,8 @@ class IO
 			end
 			
 			# Parse an address from netstat format to Addrinfo (TCP, numeric port).
-			# @parameter address [String] Address string from netstat, e.g. "127.0.0.1.50876" or "*.63703".
+			# @parameter address [String] Address string from netstat, e.g. "127.0.0.1.50876", "*.63703",
+			#   "[::1].8080", or "::1.8080" (bare IPv6, no brackets, as macOS netstat outputs).
 			# @returns [Addrinfo | Nil] Addrinfo for the listener, or nil if the line cannot be parsed.
 			def self.parse_address(address)
 				# Handle wildcard addresses: *.port -> 0.0.0.0:port
@@ -26,18 +27,26 @@ class IO
 					return Addrinfo.tcp("0.0.0.0", port)
 				end
 				
-				# Handle IPv4 addresses: ip.port -> ip:port
-				if address =~ /^([0-9.]+)\.(\d+)$/
-					ip = $1
-					port = $2.to_i
-					return Addrinfo.tcp(ip, port)
-				end
-				
-				# Handle IPv6: [::1].8080, [fe80::1%lo0].8080, [::].8080
+				# Handle bracketed IPv6: [::1].8080, [fe80::1%lo0].8080, [::].8080
 				if address =~ /\A\[([^\]]+)\]\.(\d+)\z/
 					ip = $1.sub(/%.*\z/, "")  # strip zone ID (e.g. %lo0)
 					port = $2.to_i
 					return Addrinfo.tcp(ip, port)
+				end
+				
+				# Split at the last dot; everything after must be a numeric port.
+				# This handles both IPv4 (127.0.0.1.PORT) and bare IPv6 (::1.PORT, fe80::1%lo0.PORT).
+				if (dot_idx = address.rindex(".")) && address[dot_idx + 1..].match?(/\A\d+\z/)
+					ip = address[0, dot_idx]
+					port = address[dot_idx + 1..].to_i
+					
+					if ip.include?(":")
+						# IPv6: strip zone ID (e.g. fe80::1%lo0 → fe80::1)
+						ip = ip.sub(/%.*\z/, "")
+						return Addrinfo.tcp(ip, port)
+					else
+						return Addrinfo.tcp(ip, port)
+					end
 				end
 				
 				nil
@@ -52,47 +61,54 @@ class IO
 				end
 			end
 			
-			# Parse netstat -L output and extract listener statistics.
+			# Parse a single netstat -L output stream and accumulate into +listeners+.
+			# @parameter io [IO] Open pipe from netstat.
+			# @parameter listeners [Hash] Accumulator keyed by listener address string.
+			# @parameter address_filter [Set | Nil] Optional downcased address filter.
+			def self.parse_netstat_output(io, listeners, address_filter)
+				io.each_line do |line|
+					next if line.start_with?("Current") || line.start_with?("Listen") || line.strip.empty?
+					
+					# Format: "queue_length/incomplete_queue_length/maximum_queue_length    Local Address"
+					fields = line.split(/\s+/)
+					next if fields.size < 2
+					
+					queue_statistics = fields[0]
+					local_address_raw = fields[1]
+					
+					# Parse queue statistics: "queue_length/incomplete_queue_length/maximum_queue_length"
+					next unless queue_statistics =~ /^(\d+)\/(\d+)\/(\d+)$/
+					queue_length = $1.to_i
+					# incomplete_queue_length = $2.to_i  # incomplete connections (SYN_RECV)
+					# maximum_queue_length = $3.to_i  # maximum queue size
+					
+					addrinfo = parse_address(local_address_raw)
+					next unless addrinfo
+					
+					key = tcp_listener_key(addrinfo)
+					next if address_filter && !address_filter.include?(key.downcase)
+					
+					listeners[key] ||= Listener.new(addrinfo, 0, 0, 0, 0, 0)
+					# Accumulate rather than overwrite: macOS shows both IPv4 and IPv6 wildcard
+					# sockets as "*.PORT", so multiple LISTEN rows can share the same key.
+					listeners[key].queued_count += queue_length
+					# active_count and close_wait_count are 0 (netstat -L doesn't expose connection states)
+					listeners[key].active_count = 0
+					listeners[key].close_wait_count = 0
+				end
+			end
+			
+			# Parse netstat -L output and extract listener statistics for IPv4 and IPv6.
 			# @parameter addresses [Array(String) | Nil] Optional filter for specific addresses.
 			# @returns [Array(Listener)] One entry per listening socket reported by netstat.
 			def self.capture_tcp(addresses = nil)
 				listeners = {}
 				address_filter = addresses ? addresses.map{|address| address.downcase}.to_set : nil
 				
+				# A single `netstat -L -an -p tcp` invocation reports both IPv4 and IPv6
+				# listeners on macOS — no separate tcp6 pass is needed.
 				IO.popen([NETSTAT, "-L", "-an", "-p", "tcp"], "r") do |io|
-					# Skip header lines
-					io.each_line do |line|
-						# Skip header and empty lines
-						next if line.start_with?("Current") || line.start_with?("Listen") || line.strip.empty?
-						
-						# Format: "queue_length/incomplete_queue_length/maximum_queue_length    Local Address"
-						fields = line.split(/\s+/)
-						next if fields.size < 2
-						
-						queue_statistics = fields[0]
-						local_address_raw = fields[1]
-						
-						# Parse queue statistics: "queue_length/incomplete_queue_length/maximum_queue_length"
-						if queue_statistics =~ /^(\d+)\/(\d+)\/(\d+)$/
-							queue_length = $1.to_i
-							# incomplete_queue_length = $2.to_i  # incomplete connections (SYN_RECV)
-							# maximum_queue_length = $3.to_i  # maximum queue size
-							
-							addrinfo = parse_address(local_address_raw)
-							next unless addrinfo
-							
-							key = tcp_listener_key(addrinfo)
-							# Apply filter if specified
-							next if address_filter && !address_filter.include?(key.downcase)
-							
-							listeners[key] ||= Listener.new(addrinfo, 0, 0, 0, 0, 0)
-							listeners[key].queued_count = queue_length
-							
-							# active_count and close_wait_count set to 0 (netstat -L doesn't expose connection states)
-							listeners[key].active_count = 0
-							listeners[key].close_wait_count = 0
-						end
-					end
+					parse_netstat_output(io, listeners, address_filter)
 				end
 				
 				return listeners.values

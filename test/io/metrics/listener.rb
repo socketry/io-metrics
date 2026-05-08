@@ -218,11 +218,6 @@ describe IO::Metrics::Listener do
 					skip "Listener stats are not supported on this platform!"
 				end
 				
-				# Darwin uses netstat -L; IPv6 listener lines are not consistently parseable.
-				if RUBY_PLATFORM.include?("darwin")
-					skip "IPv6 listener queue capture is not exercised on Darwin"
-				end
-				
 				n = 10
 				server = TCPServer.new("::1", 0)
 				server.listen([n, Socket::SOMAXCONN].min)

@@ -1,5 +1,9 @@
 # Releases
 
+## Unreleased
+
+  - Fix parsing of IPv6 addresses on Darwin.
+
 ## v0.4.0
 
   - Introduce `Listener#fin_wait_count`: connections in `FIN_WAIT1` or `FIN_WAIT2` state — server has sent FIN (initiated close) and is waiting for the peer to finish closing. Symmetric counterpart to `close_wait_count`.
