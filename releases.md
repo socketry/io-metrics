@@ -1,6 +1,6 @@
 # Releases
 
-## Unreleased
+## v0.4.1
 
   - Fix parsing of IPv6 addresses on Darwin.
 
