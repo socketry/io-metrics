@@ -10,8 +10,8 @@ return unless RUBY_PLATFORM.include?("linux") && defined?(IO::Metrics::Listener:
 
 describe IO::Metrics::Listener::Native do
 	def listener_key(listener)
-		a = listener.address
-		a.ipv6? ? "[#{a.ip_address}]:#{a.ip_port}" : "#{a.ip_address}:#{a.ip_port}"
+		address = listener.address
+		address.ipv6? ? "[#{address.ip_address}]:#{address.ip_port}" : "#{address.ip_address}:#{address.ip_port}"
 	end
 	
 	def find_listener(stats, key)
@@ -189,8 +189,8 @@ describe IO::Metrics::Listener::Native do
 				
 				native_row = find_listener(native_stats, key)
 				linux_row  = linux_stats&.find{|l|
-					a = l.address
-					"#{a.ip_address}:#{a.ip_port}" == key
+					address = l.address
+					"#{address.ip_address}:#{address.ip_port}" == key
 				}
 				
 				expect(native_row).not.to be_nil

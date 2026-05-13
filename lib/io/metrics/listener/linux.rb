@@ -232,7 +232,7 @@ class IO
 				
 				# Count CLOSE_WAIT connections for each listener.
 				# Peer has closed its end; application still holds the socket
-				# (e.g. running rack.response_finished callbacks).
+				# (e.g. running `rack.response_finished` callbacks).
 				close_wait_connections.each do |local_address|
 					if listener_address = find_matching_listener(local_address, listeners)
 						listeners[listener_address].close_wait_count += 1

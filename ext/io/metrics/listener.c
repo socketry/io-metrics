@@ -5,7 +5,7 @@
 //
 // This is the same kernel interface used by `ss(8)` and Raindrops. It is
 // significantly faster than parsing /proc/net/tcp* because:
-//   - Single syscall round-trip per address family.
+//   - Single system call round-trip per address family.
 //   - No string parsing or hex decoding.
 //   - Kernel-filtered: only the states we request are returned.
 //
@@ -42,8 +42,8 @@
 	 (1 << TCP_FIN_WAIT2)  | \
 	 (1 << TCP_TIME_WAIT))
 
-// Receive buffer: sized for ~400 sockets per recv() call. The kernel sends
-// multiple messages per recv() in a multi-part netlink response.
+// Receive buffer: sized for ~400 sockets per receive call. The kernel sends
+// multiple messages per receive call in a multi-part netlink response.
 #define IO_METRICS_RECEIVE_BUFFER_SIZE 65536
 
 // ── Listener table helpers ────────────────────────────────────────────────
@@ -114,8 +114,8 @@ static void process_diag_message(
 			break;
 		}
 		case TCP_ESTABLISHED: {
-			// inode == 0 means the socket is in the accept queue but has not
-			// yet been accept()-ed. Those are already reflected in queued_count.
+			// inode == 0 means the socket is in the accept queue but the
+			// application has not called accept yet. Those are already reflected in queued_count.
 			if (message->idiag_inode == 0) break;
 			struct IO_Metrics_Listener *listener = find_listener(state, family, address, port);
 			if (listener) listener->active_count++;
@@ -142,7 +142,7 @@ static void process_diag_message(
 
 // ── Netlink I/O ──────────────────────────────────────────────────────────
 
-static int send_inet_diag_request(int socket_fd, uint8_t family, uint32_t states)
+static int send_inet_diag_request(int netlink_socket, uint8_t family, uint32_t states)
 {
 	struct {
 		struct nlmsghdr      netlink_header;
@@ -162,7 +162,7 @@ static int send_inet_diag_request(int socket_fd, uint8_t family, uint32_t states
 	memset(&netlink_address, 0, sizeof(netlink_address));
 	netlink_address.nl_family = AF_NETLINK;
 	
-	return (sendto(socket_fd, &request, sizeof(request), 0,
+	return (sendto(netlink_socket, &request, sizeof(request), 0,
 	               (struct sockaddr *)&netlink_address, sizeof(netlink_address)) < 0) ? -1 : 0;
 }
 
@@ -170,12 +170,12 @@ static int send_inet_diag_request(int socket_fd, uint8_t family, uint32_t states
 // the requested family. This prevents IPv4-mapped IPv6 entries (returned by
 // some kernels in an AF_INET6 dump) from being double-counted against AF_INET
 // listeners.
-static int recv_inet_diag_responses(int socket_fd, struct IO_Metrics_State *state, uint8_t family)
+static int recv_inet_diag_responses(int netlink_socket, struct IO_Metrics_State *state, uint8_t family)
 {
 	char receive_buffer[IO_METRICS_RECEIVE_BUFFER_SIZE];
 	
 	for (;;) {
-		ssize_t received_length = recv(socket_fd, receive_buffer, sizeof(receive_buffer), 0);
+		ssize_t received_length = recv(netlink_socket, receive_buffer, sizeof(receive_buffer), 0);
 		if (received_length < 0) {
 			if (errno == EINTR) continue;
 			return -1;
@@ -200,13 +200,13 @@ static int recv_inet_diag_responses(int socket_fd, struct IO_Metrics_State *stat
 // Capture all listener stats for one address family.
 static int capture_family(struct IO_Metrics_State *state, uint8_t family)
 {
-	int socket_fd = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_INET_DIAG);
-	if (socket_fd < 0) return -1;
+	int netlink_socket = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_INET_DIAG);
+	if (netlink_socket < 0) return -1;
 	
-	int status = send_inet_diag_request(socket_fd, family, IO_METRICS_STATES);
-	if (status == 0) status = recv_inet_diag_responses(socket_fd, state, family);
+	int status = send_inet_diag_request(netlink_socket, family, IO_METRICS_STATES);
+	if (status == 0) status = recv_inet_diag_responses(netlink_socket, state, family);
 	
-	close(socket_fd);
+	close(netlink_socket);
 	return status;
 }
 
@@ -281,7 +281,7 @@ static VALUE IO_Metrics_Listener_Native_capture(int argc, VALUE *argv, VALUE sel
 		rb_sys_fail("IO_Metrics_Listener_Native_capture: AF_INET6");
 	}
 	
-	// Build a lowercase address filter hash for O(1) lookup.
+	// Build a lowercase address filter hash for constant-time lookup.
 	VALUE address_filter = Qnil;
 	if (!NIL_P(addresses) && RB_TYPE_P(addresses, T_ARRAY)) {
 		address_filter = rb_hash_new();

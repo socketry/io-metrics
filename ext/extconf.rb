@@ -20,7 +20,7 @@ end
 $srcs = ["io/metrics/metrics.c"]
 $VPATH << "$(srcdir)/io/metrics"
 
-# Linux netlink inet_diag: native listener stats without /proc parsing.
+# Linux netlink inet_diag: native listener stats without line-by-line parsing of /proc/net/tcp.
 # Compile on Linux; the C code is guarded by #ifdef __linux__ internally.
 if RbConfig::CONFIG["target_os"].include?("linux")
 	have_header("linux/inet_diag.h")  # sets HAVE_LINUX_INET_DIAG_H in extconf.h

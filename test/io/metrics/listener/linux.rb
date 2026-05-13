@@ -14,13 +14,13 @@ describe IO::Metrics::Listener::Linux do
 	include IO::Metrics::LinuxContext
 	
 	def listener_display_key(listener)
-		a = listener.address
-		if a.afamily == Socket::AF_UNIX
-			a.unix_path
-		elsif a.ipv6?
-			"[#{a.ip_address}]:#{a.ip_port}"
+		address = listener.address
+		if address.afamily == Socket::AF_UNIX
+			address.unix_path
+		elsif address.ipv6?
+			"[#{address.ip_address}]:#{address.ip_port}"
 		else
-			"#{a.ip_address}:#{a.ip_port}"
+			"#{address.ip_address}:#{address.ip_port}"
 		end
 	end
 	

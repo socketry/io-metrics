@@ -12,8 +12,8 @@ return unless IO::Metrics::Listener::Darwin.supported?
 describe IO::Metrics::Listener::Darwin do
 	def find_listener(stats, key)
 		stats.find do |l|
-			addr = l.address
-			display = addr.ipv6? ? "[#{addr.ip_address}]:#{addr.ip_port}" : "#{addr.ip_address}:#{addr.ip_port}"
+			address = l.address
+			display = address.ipv6? ? "[#{address.ip_address}]:#{address.ip_port}" : "#{address.ip_address}:#{address.ip_port}"
 			display == key
 		end
 	end
