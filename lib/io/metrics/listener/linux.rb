@@ -152,8 +152,6 @@ class IO
 			# @returns [Array(Listener)] One entry per listening socket.
 			def self.capture_tcp_file(file, addresses = nil, ipv6: false)
 				gather_tcp_file(file, addresses, ipv6: ipv6).values
-			rescue Errno::ENOENT, Errno::EACCES
-				return []
 			end
 			
 			# Internal: same as capture_tcp_file but returns a Hash keyed by display address for merging and connection matching.
