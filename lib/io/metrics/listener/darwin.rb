@@ -28,9 +28,9 @@ class IO
 				end
 				
 				# Handle bracketed IPv6: [::1].8080, [fe80::1%lo0].8080, [::].8080
-				if address =~ /\A\[([^\]]+)\]\.(\d+)\z/
-					ip = $1.sub(/%.*\z/, "")  # strip zone identifier (text after `%`), e.g. `%lo0`
-					port = $2.to_i
+				if (m = address.match(/\A\[([^\]]+)\]\.(\d+)\z/))
+					ip = m[1].sub(/%.*\z/, "")  # strip zone identifier (text after `%`), e.g. `%lo0`
+					port = m[2].to_i
 					return Addrinfo.tcp(ip, port)
 				end
 				

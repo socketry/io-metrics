@@ -37,29 +37,8 @@ class IO
 			def self.zero
 				new(nil, 0, 0, 0, 0, 0)
 			end
-			
-			# Whether listener stats can be captured on this system.
-			def self.supported?
-				false
-			end
-			
-			# Capture listener stats for the given address(es).
-			# @parameter addresses [Array(String) | Nil] TCP address(es) to capture, e.g. ["0.0.0.0:80"]. If nil, captures all listening TCP sockets.
-			# @parameter paths [Array(String) | Nil] Unix socket path(s) to capture. If nil and addresses is nil, captures all. If nil but addresses specified, captures none.
-			# @returns [Array(Listener) | Nil] Captured listeners, or nil if not supported.
-			def self.capture(**options)
-				return nil
-			end
 		end
 	end
 end
 
-if RUBY_PLATFORM.include?("linux")
-	begin
-		require_relative "listener/native"
-	rescue LoadError
-		require_relative "listener/linux"
-	end
-elsif RUBY_PLATFORM.include?("darwin")
-	require_relative "listener/darwin"
-end
+require_relative "listener/platform_select"
