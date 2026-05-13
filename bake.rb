@@ -8,7 +8,11 @@ def build
 	
 	Dir.chdir(ext_path) do
 		system("ruby ./extconf.rb") or raise "extconf.rb failed"
-		system("make") or raise "make failed"
+		
+		# Only build if Makefile exists:
+		if File.exist?("Makefile")
+			system("make") or raise "make failed"
+		end
 	end
 end
 
