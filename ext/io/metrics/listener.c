@@ -20,6 +20,7 @@
 #include <linux/rtnetlink.h>
 #include <linux/inet_diag.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -31,40 +32,126 @@
 
 // ── Listener table helpers ────────────────────────────────────────────────
 
+#define IO_METRICS_HASH_INITIAL_CAPACITY 32
+
+static uint64_t io_metrics_hash_key(uint8_t family, uint16_t port, const uint8_t *address_16)
+{
+	uint64_t h = 14695981039346656037ULL;
+	h ^= (uint64_t)family;
+	h *= 1099511628211ULL;
+	h ^= (uint64_t)(port & 0xff);
+	h *= 1099511628211ULL;
+	h ^= (uint64_t)(port >> 8);
+	h *= 1099511628211ULL;
+	for (int i = 0; i < 16; i++) {
+		h ^= (uint64_t)address_16[i];
+		h *= 1099511628211ULL;
+	}
+	return h;
+}
+
+static int listener_key_matches(const struct IO_Metrics_Listener *listener, uint8_t family, uint16_t port, const uint8_t *address_16)
+{
+	return listener->family == family && listener->port == port && memcmp(listener->address, address_16, 16) == 0;
+}
+
+static void state_init(struct IO_Metrics_State *state)
+{
+	memset(state, 0, sizeof(*state));
+	state->hash_capacity = IO_METRICS_HASH_INITIAL_CAPACITY;
+	state->hash_slots = malloc(sizeof(int32_t) * (size_t)state->hash_capacity);
+	if (!state->hash_slots) rb_memerror();
+	for (int i = 0; i < state->hash_capacity; i++) state->hash_slots[i] = -1;
+}
+
+static void state_destroy(struct IO_Metrics_State *state)
+{
+	free(state->hash_slots);
+	state->hash_slots = NULL;
+	state->hash_capacity = 0;
+}
+
+// Rebuild open-addressing table at new_capacity. Reinserts listeners[0 .. count) by key.
+static void state_hash_rebuild(struct IO_Metrics_State *state, int new_capacity)
+{
+	int32_t *new_slots = malloc(sizeof(int32_t) * (size_t)new_capacity);
+	if (!new_slots) rb_memerror();
+	for (int i = 0; i < new_capacity; i++) new_slots[i] = -1;
+	free(state->hash_slots);
+	state->hash_slots = new_slots;
+	state->hash_capacity = new_capacity;
+	for (int i = 0; i < state->count; i++) {
+		struct IO_Metrics_Listener *listener = &state->listeners[i];
+		uint64_t h = io_metrics_hash_key(listener->family, listener->port, listener->address);
+		int pos = (int)(h % (uint64_t)(unsigned)new_capacity);
+		while (new_slots[pos] != -1) pos = (pos + 1) % new_capacity;
+		new_slots[pos] = i;
+	}
+}
+
+// Grow when load would exceed one half after the next insert (linear probing).
+static void state_hash_reserve_for_insert(struct IO_Metrics_State *state)
+{
+	if ((state->count + 1) * 2 <= state->hash_capacity) return;
+	int new_cap = state->hash_capacity * 2;
+	if (new_cap < IO_METRICS_HASH_INITIAL_CAPACITY) new_cap = IO_METRICS_HASH_INITIAL_CAPACITY;
+	state_hash_rebuild(state, new_cap);
+}
+
+static struct IO_Metrics_Listener *state_lookup(struct IO_Metrics_State *state, uint8_t family, uint16_t port, const uint8_t *address_16)
+{
+	if (!state->hash_slots || state->hash_capacity == 0) return NULL;
+	uint64_t h = io_metrics_hash_key(family, port, address_16);
+	int pos = (int)(h % (uint64_t)(unsigned)state->hash_capacity);
+	int start = pos;
+	for (;;) {
+		int32_t li = state->hash_slots[pos];
+		if (li < 0) return NULL;
+		if (listener_key_matches(&state->listeners[li], family, port, address_16)) return &state->listeners[li];
+		pos = (pos + 1) % state->hash_capacity;
+		if (pos == start) return NULL;
+	}
+}
+
 static struct IO_Metrics_Listener *find_or_create_listener(struct IO_Metrics_State *state, uint8_t family, const uint8_t *address, uint16_t port /* host byte order */) {
 	size_t address_length = (family == AF_INET) ? 4 : 16;
-	
-	for (int index = 0; index < state->count; index++) {
-		struct IO_Metrics_Listener *listener = &state->listeners[index];
-		if (listener->family == family && listener->port == port && memcmp(listener->address, address, address_length) == 0) {
-			return listener;
-		}
-	}
-	
+	uint8_t addr16[16];
+	memcpy(addr16, address, address_length);
+	if (address_length < 16) memset(addr16 + address_length, 0, 16 - address_length);
+
+	struct IO_Metrics_Listener *found = state_lookup(state, family, port, addr16);
+	if (found) return found;
+
 	if (state->count >= IO_METRICS_MAX_LISTENERS) return NULL;
-	
-	struct IO_Metrics_Listener *listener = &state->listeners[state->count++];
+	state_hash_reserve_for_insert(state);
+
+	int idx = state->count;
+	struct IO_Metrics_Listener *listener = &state->listeners[idx];
 	memset(listener, 0, sizeof(*listener));
 	listener->family = family;
 	listener->port = port;
-	memcpy(listener->address, address, address_length);
+	memcpy(listener->address, addr16, 16);
+	state->count++;
+
+	uint64_t h = io_metrics_hash_key(family, port, addr16);
+	int pos = (int)(h % (uint64_t)(unsigned)state->hash_capacity);
+	while (state->hash_slots[pos] != -1) pos = (pos + 1) % state->hash_capacity;
+	state->hash_slots[pos] = idx;
 	return listener;
 }
 
 // Match a connection's local address/port to its listener. Prefers exact match; falls back to wildcard (0.0.0.0:port or [::]:port).
 static struct IO_Metrics_Listener *find_listener(struct IO_Metrics_State *state, uint8_t family, const uint8_t *address, uint16_t port /* host byte order */) {
-	static const uint8_t zeros[16] = {0};
 	size_t address_length = (family == AF_INET) ? 4 : 16;
-	struct IO_Metrics_Listener *wildcard = NULL;
-	
-	for (int index = 0; index < state->count; index++) {
-		struct IO_Metrics_Listener *listener = &state->listeners[index];
-		if (listener->family != family || listener->port != port) continue;
-		if (memcmp(listener->address, address, address_length) == 0) return listener;
-		if (memcmp(listener->address, zeros, address_length) == 0) wildcard = listener;
-	}
-	
-	return wildcard;
+	uint8_t addr16[16];
+	memcpy(addr16, address, address_length);
+	if (address_length < 16) memset(addr16 + address_length, 0, 16 - address_length);
+
+	struct IO_Metrics_Listener *exact = state_lookup(state, family, port, addr16);
+	if (exact) return exact;
+
+	static const uint8_t zeros[16] = {0};
+	return state_lookup(state, family, port, zeros);
 }
 
 // ── inet_diag message processing ─────────────────────────────────────────
@@ -212,12 +299,14 @@ static VALUE IO_Metrics_Listener_Native_capture(int argc, VALUE *argv, VALUE sel
 	}
 	
 	struct IO_Metrics_State state;
-	memset(&state, 0, sizeof(state));
-	
+	state_init(&state);
+
 	if (capture_family(&state, AF_INET) < 0) {
+		state_destroy(&state);
 		rb_sys_fail("IO_Metrics_Listener_Native_capture: AF_INET");
 	}
 	if (capture_family(&state, AF_INET6) < 0) {
+		state_destroy(&state);
 		rb_sys_fail("IO_Metrics_Listener_Native_capture: AF_INET6");
 	}
 	
@@ -257,7 +346,8 @@ static VALUE IO_Metrics_Listener_Native_capture(int argc, VALUE *argv, VALUE sel
 		
 		rb_ary_push(ruby_array, listener_to_ruby(listener, IO_Metrics_Listener));
 	}
-	
+
+	state_destroy(&state);
 	return ruby_array;
 }
 

@@ -37,10 +37,12 @@ struct IO_Metrics_Listener {
 	uint32_t time_wait_count;
 };
 
-// Collection of all listeners seen in one capture pass.
+// Collection of all listeners seen in one capture pass. hash_slots maps keys (family, port, 16-byte address) to listener indices using open addressing (-1 = empty); hash_capacity doubles when load would exceed one half.
 struct IO_Metrics_State {
 	struct IO_Metrics_Listener listeners[IO_METRICS_MAX_LISTENERS];
 	int count;
+	int32_t *hash_slots;
+	int hash_capacity;
 };
 
 void Init_IO_Metrics_Listener(VALUE IO_Metrics);
