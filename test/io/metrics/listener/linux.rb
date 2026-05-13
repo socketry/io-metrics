@@ -14,13 +14,13 @@ describe IO::Metrics::Listener::Linux do
 	include IO::Metrics::LinuxContext
 	
 	def listener_display_key(listener)
-		a = listener.address
-		if a.afamily == Socket::AF_UNIX
-			a.unix_path
-		elsif a.ipv6?
-			"[#{a.ip_address}]:#{a.ip_port}"
+		address = listener.address
+		if address.afamily == Socket::AF_UNIX
+			address.unix_path
+		elsif address.ipv6?
+			"[#{address.ip_address}]:#{address.ip_port}"
 		else
-			"#{a.ip_address}:#{a.ip_port}"
+			"#{address.ip_address}:#{address.ip_port}"
 		end
 	end
 	
@@ -279,6 +279,92 @@ describe IO::Metrics::Listener::Linux do
 			expect(IO::Metrics::Listener::Linux.parse_state("0A")).to be == :listen
 			expect(IO::Metrics::Listener::Linux.parse_state("01")).to be == :established
 			expect(IO::Metrics::Listener::Linux.parse_state("03")).to be == :syn_recv
+		end
+		
+		it "covers every TCP state constant and unknown values" do
+			{
+				"02" => :syn_sent,
+				"04" => :fin_wait1,
+				"05" => :fin_wait2,
+				"06" => :time_wait,
+				"07" => :close,
+				"08" => :close_wait,
+				"09" => :last_ack,
+				"0B" => :closing,
+			}.each do |hex, expected|
+				expect(IO::Metrics::Listener::Linux.parse_state(hex)).to be == expected
+			end
+			
+			expect(IO::Metrics::Listener::Linux.parse_state("FF")).to be == :unknown
+		end
+	end
+	
+	with ".find_matching_listener" do
+		it "matches IPv4 wildcard listener" do
+			listeners = {"0.0.0.0:8080" => IO::Metrics::Listener.zero}
+			expect(IO::Metrics::Listener::Linux.find_matching_listener("192.0.2.1:8080", listeners)).to be == "0.0.0.0:8080"
+		end
+		
+		it "matches IPv6 wildcard listener" do
+			listeners = {"[::]:9000" => IO::Metrics::Listener.zero}
+			expect(IO::Metrics::Listener::Linux.find_matching_listener("[::1]:9000", listeners)).to be == "[::]:9000"
+		end
+		
+		it "returns nil for malformed bracketed IPv6" do
+			expect(IO::Metrics::Listener::Linux.find_matching_listener("[incomplete", {})).to be == nil
+		end
+		
+		it "returns nil when IPv4 address has no port" do
+			expect(IO::Metrics::Listener::Linux.find_matching_listener("noport", {})).to be == nil
+		end
+		
+		it "returns nil when local IP is not parseable" do
+			listeners = {"127.0.0.1:1" => IO::Metrics::Listener.zero}
+			expect(IO::Metrics::Listener::Linux.find_matching_listener("[not-an-ip]:1", listeners)).to be == nil
+		end
+	end
+	
+	with "missing proc files" do
+		it "returns empty hash from gather_tcp_file for a missing file" do
+			expect(IO::Metrics::Listener::Linux.gather_tcp_file("/nonexistent/io-metrics-tcp", nil, ipv6: false)).to be == {}
+		end
+		
+		it "returns empty hash from gather_tcp_file when the file is unreadable" do
+			skip "root can read mode 0 files" if Process.uid.zero?
+			
+			tmp = Tempfile.new("io-metrics-tcp")
+			path = tmp.path
+			tmp.write("sl  local_address rem_address\n")
+			tmp.close
+			File.chmod(0o000, path)
+			
+			expect(IO::Metrics::Listener::Linux.gather_tcp_file(path, nil, ipv6: false)).to be == {}
+		ensure
+			File.chmod(0o600, path) rescue nil
+			File.unlink(path) rescue nil
+		end
+		
+		it "returns empty array from capture_tcp_file for a missing file" do
+			expect(IO::Metrics::Listener::Linux.capture_tcp_file("/nonexistent/io-metrics-tcp", nil, ipv6: false)).to be == []
+		end
+		
+		it "returns empty array from capture_unix for a missing file" do
+			expect(IO::Metrics::Listener::Linux.capture_unix(nil, file: "/nonexistent/io-metrics-unix")).to be == []
+		end
+		
+		it "returns empty array from capture_unix when the file is unreadable" do
+			skip "root can read mode 0 files" if Process.uid.zero?
+			
+			tmp = Tempfile.new("io-metrics-unix")
+			path = tmp.path
+			tmp.write("Num       RefCount Protocol Flags Type St Inode Path\n")
+			tmp.close
+			File.chmod(0o000, path)
+			
+			expect(IO::Metrics::Listener::Linux.capture_unix(nil, file: path)).to be == []
+		ensure
+			File.chmod(0o600, path) rescue nil
+			File.unlink(path) rescue nil
 		end
 	end
 	

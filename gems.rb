@@ -5,6 +5,7 @@
 
 source "https://rubygems.org"
 
+# gemspec includes a native C extension (ext/extconf.rb) for Linux netlink inet_diag.
 gemspec
 
 gem "bake"
@@ -17,12 +18,12 @@ group :maintenance, optional: true do
 	gem "agent-context"
 	
 	gem "utopia-project"
+	gem "decode"
 end
 
 group :test do
 	gem "sus"
 	gem "covered"
-	gem "decode"
 	
 	gem "rubocop"
 	gem "rubocop-md"

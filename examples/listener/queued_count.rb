@@ -9,7 +9,7 @@
 #
 # Each scenario:
 #  1. Creates one or more listening sockets.
-#  2. Fills the accept queue with N connections (without accept()-ing them).
+#  2. Fills the accept queue with N connections (without calling accept on them).
 #  3. Captures io-metrics and checks the total queued_count.
 #  4. Reports PASS / FAIL and shows per-listener detail.
 #
@@ -87,8 +87,8 @@ def check(scenario, port, expected_queued)
 	
 	puts "  #{status}"
 	listeners.each do |l|
-		addr = l.address&.inspect_sockaddr || "unknown"
-		puts "    #{addr}: queued=#{l.queued_count} active=#{l.active_count}"
+		address_text = l.address&.inspect_sockaddr || "unknown"
+		puts "    #{address_text}: queued=#{l.queued_count} active=#{l.active_count}"
 	end
 	puts "    Total queued_count across all listeners on port #{port}: #{total}"
 end

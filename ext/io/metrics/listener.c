@@ -1,0 +1,366 @@
+// Released under the MIT License.
+// Copyright, 2026, by Samuel Williams.
+//
+// Native Linux listener statistics using netlink NETLINK_INET_DIAG. This is the same kernel interface used by `ss(8)` and Raindrops. It is significantly faster than parsing /proc/net/tcp* because: single system call round-trip per address family; no string parsing or hex decoding; kernel-filtered so only the states we request are returned.
+//
+// The inet_diag protocol sends one netlink message per socket. LISTEN rows carry the accept-queue depth (idiag_rqueue). Connection rows carry the local address/port that identifies their listener. A single bitmask request covers all TCP states of interest; the kernel guarantees LISTEN rows are delivered before the connections that belong to them.
+
+#include "extconf.h"
+
+#if defined(HAVE_LINUX_INET_DIAG_H) || defined(__linux__)
+
+#include "listener.h"
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
+#include <linux/inet_diag.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+// States we request from the kernel in a single dump.
+#define IO_METRICS_STATES ((1 << TCP_LISTEN) | (1 << TCP_ESTABLISHED) | (1 << TCP_CLOSE_WAIT) | (1 << TCP_FIN_WAIT1) | (1 << TCP_FIN_WAIT2) | (1 << TCP_TIME_WAIT))
+
+// Receive buffer: sized for ~400 sockets per receive call. The kernel sends multiple messages per receive call in a multi-part netlink response.
+#define IO_METRICS_RECEIVE_BUFFER_SIZE 65536
+
+// ── Listener table helpers ────────────────────────────────────────────────
+
+#define IO_METRICS_HASH_INITIAL_CAPACITY 32
+
+static uint64_t io_metrics_hash_key(uint8_t family, uint16_t port, const uint8_t *address_16)
+{
+	uint64_t h = 14695981039346656037ULL;
+	h ^= (uint64_t)family;
+	h *= 1099511628211ULL;
+	h ^= (uint64_t)(port & 0xff);
+	h *= 1099511628211ULL;
+	h ^= (uint64_t)(port >> 8);
+	h *= 1099511628211ULL;
+	for (int i = 0; i < 16; i++) {
+		h ^= (uint64_t)address_16[i];
+		h *= 1099511628211ULL;
+	}
+	return h;
+}
+
+static int listener_key_matches(const struct IO_Metrics_Listener *listener, uint8_t family, uint16_t port, const uint8_t *address_16)
+{
+	return listener->family == family && listener->port == port && memcmp(listener->address, address_16, 16) == 0;
+}
+
+static void state_init(struct IO_Metrics_State *state)
+{
+	memset(state, 0, sizeof(*state));
+	state->hash_capacity = IO_METRICS_HASH_INITIAL_CAPACITY;
+	state->hash_slots = malloc(sizeof(int32_t) * (size_t)state->hash_capacity);
+	if (!state->hash_slots) rb_memerror();
+	for (int i = 0; i < state->hash_capacity; i++) state->hash_slots[i] = -1;
+}
+
+static void state_destroy(struct IO_Metrics_State *state)
+{
+	free(state->hash_slots);
+	state->hash_slots = NULL;
+	state->hash_capacity = 0;
+}
+
+// Rebuild open-addressing table at new_capacity. Reinserts listeners[0 .. count) by key.
+static void state_hash_rebuild(struct IO_Metrics_State *state, int new_capacity)
+{
+	int32_t *new_slots = malloc(sizeof(int32_t) * (size_t)new_capacity);
+	if (!new_slots) rb_memerror();
+	for (int i = 0; i < new_capacity; i++) new_slots[i] = -1;
+	free(state->hash_slots);
+	state->hash_slots = new_slots;
+	state->hash_capacity = new_capacity;
+	for (int i = 0; i < state->count; i++) {
+		struct IO_Metrics_Listener *listener = &state->listeners[i];
+		uint64_t h = io_metrics_hash_key(listener->family, listener->port, listener->address);
+		int pos = (int)(h % (uint64_t)(unsigned)new_capacity);
+		while (new_slots[pos] != -1) pos = (pos + 1) % new_capacity;
+		new_slots[pos] = i;
+	}
+}
+
+// Grow when load would exceed one half after the next insert (linear probing).
+static void state_hash_reserve_for_insert(struct IO_Metrics_State *state)
+{
+	if ((state->count + 1) * 2 <= state->hash_capacity) return;
+	int new_cap = state->hash_capacity * 2;
+	if (new_cap < IO_METRICS_HASH_INITIAL_CAPACITY) new_cap = IO_METRICS_HASH_INITIAL_CAPACITY;
+	state_hash_rebuild(state, new_cap);
+}
+
+static struct IO_Metrics_Listener *state_lookup(struct IO_Metrics_State *state, uint8_t family, uint16_t port, const uint8_t *address_16)
+{
+	if (!state->hash_slots || state->hash_capacity == 0) return NULL;
+	uint64_t h = io_metrics_hash_key(family, port, address_16);
+	int pos = (int)(h % (uint64_t)(unsigned)state->hash_capacity);
+	int start = pos;
+	for (;;) {
+		int32_t li = state->hash_slots[pos];
+		if (li < 0) return NULL;
+		if (listener_key_matches(&state->listeners[li], family, port, address_16)) return &state->listeners[li];
+		pos = (pos + 1) % state->hash_capacity;
+		if (pos == start) return NULL;
+	}
+}
+
+static struct IO_Metrics_Listener *find_or_create_listener(struct IO_Metrics_State *state, uint8_t family, const uint8_t *address, uint16_t port /* host byte order */) {
+	size_t address_length = (family == AF_INET) ? 4 : 16;
+	uint8_t addr16[16];
+	memcpy(addr16, address, address_length);
+	if (address_length < 16) memset(addr16 + address_length, 0, 16 - address_length);
+
+	struct IO_Metrics_Listener *found = state_lookup(state, family, port, addr16);
+	if (found) return found;
+
+	if (state->count >= IO_METRICS_MAX_LISTENERS) return NULL;
+	state_hash_reserve_for_insert(state);
+
+	int idx = state->count;
+	struct IO_Metrics_Listener *listener = &state->listeners[idx];
+	memset(listener, 0, sizeof(*listener));
+	listener->family = family;
+	listener->port = port;
+	memcpy(listener->address, addr16, 16);
+	state->count++;
+
+	uint64_t h = io_metrics_hash_key(family, port, addr16);
+	int pos = (int)(h % (uint64_t)(unsigned)state->hash_capacity);
+	while (state->hash_slots[pos] != -1) pos = (pos + 1) % state->hash_capacity;
+	state->hash_slots[pos] = idx;
+	return listener;
+}
+
+// Match a connection's local address/port to its listener. Prefers exact match; falls back to wildcard (0.0.0.0:port or [::]:port).
+static struct IO_Metrics_Listener *find_listener(struct IO_Metrics_State *state, uint8_t family, const uint8_t *address, uint16_t port /* host byte order */) {
+	size_t address_length = (family == AF_INET) ? 4 : 16;
+	uint8_t addr16[16];
+	memcpy(addr16, address, address_length);
+	if (address_length < 16) memset(addr16 + address_length, 0, 16 - address_length);
+
+	struct IO_Metrics_Listener *exact = state_lookup(state, family, port, addr16);
+	if (exact) return exact;
+
+	static const uint8_t zeros[16] = {0};
+	return state_lookup(state, family, port, zeros);
+}
+
+// ── inet_diag message processing ─────────────────────────────────────────
+
+static void process_diag_message(struct IO_Metrics_State *state, const struct inet_diag_msg *message) {
+	uint8_t family = message->idiag_family;
+	uint16_t port = ntohs(message->id.idiag_sport);
+	const uint8_t *address = (const uint8_t *)message->id.idiag_src;
+	
+	switch (message->idiag_state) {
+		case TCP_LISTEN: {
+			struct IO_Metrics_Listener *listener = find_or_create_listener(state, family, address, port);
+			if (listener) listener->queued_count += message->idiag_rqueue;
+			break;
+		}
+		case TCP_ESTABLISHED: {
+			// inode == 0 means the socket is in the accept queue but the application has not called accept yet. Those are already reflected in queued_count.
+			if (message->idiag_inode == 0) break;
+			struct IO_Metrics_Listener *listener = find_listener(state, family, address, port);
+			if (listener) listener->active_count++;
+			break;
+		}
+		case TCP_CLOSE_WAIT: {
+			struct IO_Metrics_Listener *listener = find_listener(state, family, address, port);
+			if (listener) listener->close_wait_count++;
+			break;
+		}
+		case TCP_FIN_WAIT1:
+		case TCP_FIN_WAIT2: {
+			struct IO_Metrics_Listener *listener = find_listener(state, family, address, port);
+			if (listener) listener->fin_wait_count++;
+			break;
+		}
+		case TCP_TIME_WAIT: {
+			struct IO_Metrics_Listener *listener = find_listener(state, family, address, port);
+			if (listener) listener->time_wait_count++;
+			break;
+		}
+	}
+}
+
+// ── Netlink I/O ──────────────────────────────────────────────────────────
+
+static int send_inet_diag_request(int netlink_socket, uint8_t family, uint32_t states)
+{
+	struct {
+		struct nlmsghdr netlink_header;
+		struct inet_diag_req diag_request;
+	} request;
+	
+	memset(&request, 0, sizeof(request));
+	request.netlink_header.nlmsg_len = sizeof(request);
+	request.netlink_header.nlmsg_type = TCPDIAG_GETSOCK;
+	request.netlink_header.nlmsg_flags = NLM_F_ROOT | NLM_F_MATCH | NLM_F_REQUEST;
+	request.netlink_header.nlmsg_pid = getpid();
+	request.netlink_header.nlmsg_seq = 1;
+	request.diag_request.idiag_family = family;
+	request.diag_request.idiag_states = states;
+	
+	struct sockaddr_nl netlink_address;
+	memset(&netlink_address, 0, sizeof(netlink_address));
+	netlink_address.nl_family = AF_NETLINK;
+	
+	return (sendto(netlink_socket, &request, sizeof(request), 0, (struct sockaddr *)&netlink_address, sizeof(netlink_address)) < 0) ? -1 : 0;
+}
+
+// Process responses, ignoring any socket whose idiag_family does not match the requested family. This prevents IPv4-mapped IPv6 entries (returned by some kernels in an AF_INET6 dump) from being double-counted against AF_INET listeners.
+static int recv_inet_diag_responses(int netlink_socket, struct IO_Metrics_State *state, uint8_t family)
+{
+	char receive_buffer[IO_METRICS_RECEIVE_BUFFER_SIZE];
+	
+	for (;;) {
+		ssize_t received_length = recv(netlink_socket, receive_buffer, sizeof(receive_buffer), 0);
+		if (received_length < 0) {
+			if (errno == EINTR) continue;
+			return -1;
+		}
+		if (received_length == 0) return 0;
+		
+		struct nlmsghdr *netlink_header = (struct nlmsghdr *)receive_buffer;
+		while (NLMSG_OK(netlink_header, (unsigned int)received_length)) {
+			if (netlink_header->nlmsg_type == NLMSG_DONE) return 0;
+			if (netlink_header->nlmsg_type == NLMSG_ERROR) return -1;
+			if (netlink_header->nlmsg_type == TCPDIAG_GETSOCK) {
+				struct inet_diag_msg *message = (struct inet_diag_msg *)NLMSG_DATA(netlink_header);
+				/* Only process entries that belong to the queried address family. */
+				if (message->idiag_family == family) process_diag_message(state, message);
+			}
+			netlink_header = NLMSG_NEXT(netlink_header, received_length);
+		}
+	}
+}
+
+// Capture all listener stats for one address family.
+static int capture_family(struct IO_Metrics_State *state, uint8_t family)
+{
+	int netlink_socket = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_INET_DIAG);
+	if (netlink_socket < 0) return -1;
+	
+	int status = send_inet_diag_request(netlink_socket, family, IO_METRICS_STATES);
+	if (status == 0) status = recv_inet_diag_responses(netlink_socket, state, family);
+	
+	close(netlink_socket);
+	return status;
+}
+
+// ── Ruby object creation ─────────────────────────────────────────────────
+
+static VALUE listener_to_ruby(const struct IO_Metrics_Listener *listener, VALUE listener_class) {
+	char ip_string[INET6_ADDRSTRLEN];
+	if (listener->family == AF_INET) {
+		struct in_addr ipv4_address;
+		memcpy(&ipv4_address, listener->address, 4);
+		inet_ntop(AF_INET, &ipv4_address, ip_string, sizeof(ip_string));
+	} else {
+		struct in6_addr ipv6_address;
+		memcpy(&ipv6_address, listener->address, 16);
+		inet_ntop(AF_INET6, &ipv6_address, ip_string, sizeof(ip_string));
+	}
+	
+	/* Addrinfo is from the socket extension; look it up by name to avoid depending on ext/socket/rubysocket.h which is not part of the public API. */
+	VALUE addrinfo_class = rb_const_get(rb_cObject, rb_intern("Addrinfo"));
+	VALUE addrinfo = rb_funcall(addrinfo_class, rb_intern("tcp"), 2, rb_str_new_cstr(ip_string), INT2NUM(listener->port));
+	
+	return rb_struct_new(listener_class, addrinfo, UINT2NUM(listener->queued_count), UINT2NUM(listener->active_count), UINT2NUM(listener->close_wait_count), UINT2NUM(listener->fin_wait_count), UINT2NUM(listener->time_wait_count), NULL);
+}
+
+// ── Ruby API ─────────────────────────────────────────────────────────────
+
+// IO::Metrics::Listener::Native.supported? -> true
+static VALUE IO_Metrics_Listener_Native_supported_p(VALUE self)
+{
+	return Qtrue;
+}
+
+// IO::Metrics::Listener::Native.capture(addresses: nil) -> Array<IO::Metrics::Listener>. Returns an Array of IO::Metrics::Listener structs for all listening TCP sockets (IPv4 and IPv6). When +addresses+ is an Array of strings, only listeners whose "ip:port" or "[ip6]:port" key appears in that array are included.
+static VALUE IO_Metrics_Listener_Native_capture(int argc, VALUE *argv, VALUE self)
+{
+	VALUE options = Qnil;
+	rb_scan_args(argc, argv, ":", &options);
+	
+	VALUE addresses = Qnil;
+	if (!NIL_P(options)) {
+		addresses = rb_hash_lookup(options, ID2SYM(rb_intern("addresses")));
+	}
+	
+	struct IO_Metrics_State state;
+	state_init(&state);
+
+	if (capture_family(&state, AF_INET) < 0) {
+		state_destroy(&state);
+		rb_sys_fail("IO_Metrics_Listener_Native_capture: AF_INET");
+	}
+	if (capture_family(&state, AF_INET6) < 0) {
+		state_destroy(&state);
+		rb_sys_fail("IO_Metrics_Listener_Native_capture: AF_INET6");
+	}
+	
+	// Build a lowercase address filter hash for constant-time lookup.
+	VALUE address_filter = Qnil;
+	if (!NIL_P(addresses) && RB_TYPE_P(addresses, T_ARRAY)) {
+		address_filter = rb_hash_new();
+		long address_count = RARRAY_LEN(addresses);
+		for (long index = 0; index < address_count; index++) {
+			VALUE lowercase_address = rb_funcall(RARRAY_AREF(addresses, index), rb_intern("downcase"), 0);
+			rb_hash_aset(address_filter, lowercase_address, Qtrue);
+		}
+	}
+	
+	VALUE IO_Metrics = rb_const_get(rb_cIO, rb_intern("Metrics"));
+	VALUE IO_Metrics_Listener = rb_const_get(IO_Metrics, rb_intern("Listener"));
+	VALUE ruby_array = rb_ary_new_capa(state.count);
+	
+	for (int index = 0; index < state.count; index++) {
+		const struct IO_Metrics_Listener *listener = &state.listeners[index];
+		
+		if (!NIL_P(address_filter)) {
+			char key[INET6_ADDRSTRLEN + 8];
+			char ip_string[INET6_ADDRSTRLEN];
+			if (listener->family == AF_INET) {
+				struct in_addr ipv4_address; memcpy(&ipv4_address, listener->address, 4);
+				inet_ntop(AF_INET, &ipv4_address, ip_string, sizeof(ip_string));
+				snprintf(key, sizeof(key), "%s:%u", ip_string, listener->port);
+			} else {
+				struct in6_addr ipv6_address; memcpy(&ipv6_address, listener->address, 16);
+				inet_ntop(AF_INET6, &ipv6_address, ip_string, sizeof(ip_string));
+				snprintf(key, sizeof(key), "[%s]:%u", ip_string, listener->port);
+			}
+			VALUE lowercase_key = rb_funcall(rb_str_new_cstr(key), rb_intern("downcase"), 0);
+			if (NIL_P(rb_hash_lookup(address_filter, lowercase_key))) continue;
+		}
+		
+		rb_ary_push(ruby_array, listener_to_ruby(listener, IO_Metrics_Listener));
+	}
+
+	state_destroy(&state);
+	return ruby_array;
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────
+
+void Init_IO_Metrics_Listener(VALUE IO_Metrics)
+{
+	VALUE IO_Metrics_Listener = rb_const_get(IO_Metrics, rb_intern("Listener"));
+
+	VALUE IO_Metrics_Listener_Native = rb_define_class_under(IO_Metrics_Listener, "Native", rb_cObject);
+
+	rb_define_singleton_method(IO_Metrics_Listener_Native, "supported?", IO_Metrics_Listener_Native_supported_p, 0);
+	rb_define_singleton_method(IO_Metrics_Listener_Native, "capture", IO_Metrics_Listener_Native_capture, -1);
+}
+
+#endif /* HAVE_LINUX_INET_DIAG_H || __linux__ */

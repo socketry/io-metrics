@@ -21,7 +21,8 @@ Gem::Specification.new do |spec|
 		"source_code_uri" => "https://github.com/socketry/io-metrics.git",
 	}
 	
-	spec.files = Dir.glob(["{lib}/**/*", "*.md"], File::FNM_DOTMATCH, base: __dir__)
+	spec.files = Dir.glob(["{ext,lib}/**/*", "*.md"], File::FNM_DOTMATCH, base: __dir__)
+	spec.extensions = ["ext/extconf.rb"]
 	
 	spec.required_ruby_version = ">= 3.3"
 	

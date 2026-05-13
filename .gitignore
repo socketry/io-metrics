@@ -5,3 +5,11 @@
 /gems.locked
 /.covered.db
 /external
+
+/ext/*.o
+/ext/*.so
+/ext/*.bundle
+/ext/*.dSYM
+/ext/mkmf.log
+/ext/Makefile
+/ext/extconf.h

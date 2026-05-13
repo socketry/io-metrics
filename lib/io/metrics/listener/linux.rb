@@ -152,8 +152,6 @@ class IO
 			# @returns [Array(Listener)] One entry per listening socket.
 			def self.capture_tcp_file(file, addresses = nil, ipv6: false)
 				gather_tcp_file(file, addresses, ipv6: ipv6).values
-			rescue Errno::ENOENT, Errno::EACCES
-				return []
 			end
 			
 			# Internal: same as capture_tcp_file but returns a Hash keyed by display address for merging and connection matching.
@@ -232,7 +230,7 @@ class IO
 				
 				# Count CLOSE_WAIT connections for each listener.
 				# Peer has closed its end; application still holds the socket
-				# (e.g. running rack.response_finished callbacks).
+				# (e.g. running `rack.response_finished` callbacks).
 				close_wait_connections.each do |local_address|
 					if listener_address = find_matching_listener(local_address, listeners)
 						listeners[listener_address].close_wait_count += 1
@@ -358,25 +356,6 @@ class IO
 				
 				return result
 			end
-		end
-	end
-end
-
-# Wire Listener.capture and Listener.supported? to this implementation on Linux.
-if IO::Metrics::Listener::Linux.supported?
-	class << IO::Metrics::Listener
-		# Whether listener capture is supported on this platform.
-		# @returns [Boolean] True if /proc/net/tcp is readable.
-		def supported?
-			true
-		end
-		
-		# Capture listener listeners for the given address(es).
-		# @parameter addresses [Array(String) | Nil] TCP address(es) to capture, e.g. ["0.0.0.0:80"]. If nil, captures all listening TCP sockets.
-		# @parameter paths [Array(String) | Nil] Unix socket path(s) to capture. If nil and addresses is nil, captures all. If nil but addresses specified, captures none.
-		# @returns [Array(Listener) | Nil] Captured listeners, or nil if not supported.
-		def capture(**options)
-			IO::Metrics::Listener::Linux.capture(**options)
 		end
 	end
 end

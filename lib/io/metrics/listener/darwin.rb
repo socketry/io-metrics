@@ -28,20 +28,20 @@ class IO
 				end
 				
 				# Handle bracketed IPv6: [::1].8080, [fe80::1%lo0].8080, [::].8080
-				if address =~ /\A\[([^\]]+)\]\.(\d+)\z/
-					ip = $1.sub(/%.*\z/, "")  # strip zone ID (e.g. %lo0)
-					port = $2.to_i
+				if (m = address.match(/\A\[([^\]]+)\]\.(\d+)\z/))
+					ip = m[1].sub(/%.*\z/, "")  # strip zone identifier (text after `%`), e.g. `%lo0`
+					port = m[2].to_i
 					return Addrinfo.tcp(ip, port)
 				end
 				
 				# Split at the last dot; everything after must be a numeric port.
 				# This handles both IPv4 (127.0.0.1.PORT) and bare IPv6 (::1.PORT, fe80::1%lo0.PORT).
-				if (dot_idx = address.rindex(".")) && address[dot_idx + 1..].match?(/\A\d+\z/)
-					ip = address[0, dot_idx]
-					port = address[dot_idx + 1..].to_i
+				if (dot_index = address.rindex(".")) && address[dot_index + 1..].match?(/\A\d+\z/)
+					ip = address[0, dot_index]
+					port = address[dot_index + 1..].to_i
 					
 					if ip.include?(":")
-						# IPv6: strip zone ID (e.g. fe80::1%lo0 → fe80::1)
+						# IPv6: strip zone identifier (text after `%`); `fe80::1%lo0` becomes `fe80::1`
 						ip = ip.sub(/%.*\z/, "")
 						return Addrinfo.tcp(ip, port)
 					else
